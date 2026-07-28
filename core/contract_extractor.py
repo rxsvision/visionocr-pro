@@ -143,9 +143,16 @@ def _finalize(data: dict, method: str, company: dict) -> dict:
         norm["direction"] = _judge_direction(norm, our_party, our_names)
         payments.append(norm)
 
-    # 合同方向: 以应收条目占比判定
+    # 合同方向: 以应收条目占比判定 (H1: 支持 unknown)
     recv = sum(1 for p in payments if p["direction"] == "receivable")
-    direction = "receivable" if recv >= len(payments) / 2 else ("payable" if payments else "receivable")
+    pay = sum(1 for p in payments if p["direction"] == "payable")
+    unknown = sum(1 for p in payments if p["direction"] == "unknown")
+    if unknown == len(payments) and payments:
+        direction = "unknown"  # 全部未知 → 合同方向也未知
+    elif recv >= pay:
+        direction = "receivable" if payments else "unknown"
+    else:
+        direction = "payable"
 
     total_amount = _to_float(data.get("total_amount"))
     currency = str(data.get("currency", "CNY") or "CNY")
@@ -222,18 +229,23 @@ def _identify_our_party(party_a: str, party_b: str, parties: str,
 
 
 def _judge_direction(payment: dict, our_party: str, our_names: list[str]) -> str:
-    """判断单笔款项方向: 我方是收款方 → receivable, 付款方 → payable。"""
+    """判断单笔款项方向: 我方是收款方 → receivable, 付款方 → payable。
+
+    H1 修复: 我方主体未配置时返回 "unknown", 不再静默猜测。
+    已配置但条款中无 payer/payee 时, 按业务默认 receivable (应收管理场景)。
+    """
     payer = str(payment.get("payer", "") or "")
     payee = str(payment.get("payee", "") or "")
     names = our_names + ([our_party] if our_party else [])
     if not names:
-        return "receivable"  # 未配置我方主体, 默认按应收 (业务定位为收款方)
+        return "unknown"  # 未配置我方主体, 方向待人工确认
     # 收款方含我方 → 应收
     if payee and any(n in payee for n in names):
         return "receivable"
     # 付款方含我方 → 应付
     if payer and any(n in payer for n in names):
         return "payable"
+    # 已配置但条款中无明确收付方 → 业务默认应收 (AR 管理场景)
     return "receivable"
 
 

@@ -568,7 +568,7 @@ class HikvisionCamera(BaseCamera):
             return None
 
         if self._frame_buf is None:
-            # 按 5000 万像素 RGB 估算预分配缓冲, 足以覆盖常见工业相机分辨率
+            # 初始分配: 按 5000 万像素 RGB 估算 (C4: 首次兜底, 后续按需扩容)
             self._frame_buf = np.zeros(5000 * 1024 * 3, dtype=np.uint8)
 
         ret = self._dll.MV_CC_GetOneFrameTimeout(
@@ -578,6 +578,21 @@ class HikvisionCamera(BaseCamera):
             ctypes.byref(self._frame_info),
             ctypes.c_uint(self.timeout_ms),
         )
+        # C4 修复: 缓冲区不足时按实际帧大小扩容后重试
+        if ret == MV_E_BUF_OVERFLOW or (ret != MV_OK and ret != MV_E_NODATA
+                                         and ret != MV_E_TIMEOUT):
+            needed = int(self._frame_info.nFrameLen)
+            if needed > self._frame_buf.nbytes:
+                logger.info("帧缓冲扩容: %d → %d bytes", self._frame_buf.nbytes, needed)
+                self._frame_buf = np.zeros(needed + 1024, dtype=np.uint8)
+                ret = self._dll.MV_CC_GetOneFrameTimeout(
+                    self._handle,
+                    self._frame_buf.ctypes.data_as(ctypes.c_void_p),
+                    ctypes.c_uint(self._frame_buf.nbytes),
+                    ctypes.byref(self._frame_info),
+                    ctypes.c_uint(self.timeout_ms),
+                )
+
         if ret == MV_E_NODATA or ret == MV_E_TIMEOUT:
             logger.debug("等待帧超时 (%s)", mv_err_str(ret))
             return None

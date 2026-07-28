@@ -150,6 +150,19 @@ def _rule_no_due_date(result: dict, raw_text: str) -> Optional[dict]:
     return None
 
 
+def _rule_direction_unknown(result: dict, raw_text: str) -> Optional[dict]:
+    """合同方向未知: 我方主体未配置或合同中未匹配到收付方 (H1)。"""
+    direction = result.get("direction", "")
+    if direction == "unknown":
+        return {
+            "level": "yellow",
+            "rule": "direction_unknown",
+            "message": "我方主体未配置, 方向待人工确认: 请检查 config.yaml company.name/aliases",
+            "evidence": "direction=unknown, 无法判定应收/应付",
+        }
+    return None
+
+
 # ─── 规则注册表 ──────────────────────────────────────────────
 _RULES = [
     _rule_amount_mismatch,
@@ -159,4 +172,5 @@ _RULES = [
     _rule_party_unidentified,
     _rule_missing_amount,
     _rule_no_due_date,
+    _rule_direction_unknown,
 ]

@@ -96,9 +96,10 @@ def create_tab_contract(config: dict, registry):
         with gr.Column(scale=1):
             gr.Markdown("### 合同上传与提取")
             file_upload = gr.File(
-                label="上传合同 (PDF/图片, 支持批量)",
+                label="上传合同 (PDF/图片/HEIC/TIFF, 支持批量)",
                 file_count="multiple",
-                file_types=[".pdf", ".png", ".jpg", ".jpeg", ".tiff"],
+                file_types=[".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif",
+                            ".bmp", ".webp", ".heic", ".heif"],
             )
             extract_btn = gr.Button("提取应收条款", variant="primary")
             status_box = gr.Markdown("")
@@ -140,7 +141,7 @@ def create_tab_contract(config: dict, registry):
                 with gr.Row():
                     edit_total = gr.Number(label="合同总额")
                     edit_direction = gr.Dropdown(label="方向",
-                                                 choices=["receivable", "payable"])
+                                                 choices=["receivable", "payable", "unknown"])
                 with gr.Row():
                     edit_start = gr.Textbox(label="起始日期 (YYYY-MM-DD)")
                     edit_end = gr.Textbox(label="终止日期 (YYYY-MM-DD)")

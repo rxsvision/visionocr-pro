@@ -31,9 +31,16 @@ def read_document(file_path: str, registry=None, ocr_engine: str = "rapidocr") -
     ext = os.path.splitext(file_path)[1].lower()
     if ext == ".pdf":
         return _read_pdf(file_path, registry, ocr_engine)
-    if ext in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
+    if ext in (".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"):
+        if ext in (".tiff", ".tif"):
+            return _read_tiff(file_path, registry, ocr_engine)
         text = _ocr_image(file_path, registry, ocr_engine)
         return {"text": text, "pages": 1, "source": "ocr", "images": [file_path]}
+    if ext in (".heic", ".heif"):
+        return _read_heic(file_path, registry, ocr_engine)
+    if ext == ".djvu":
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": "DjVu 格式暂不支持, 请先转换为 PDF (推荐 djv2pdf 或在线工具)"}
     return {"text": "", "pages": 0, "source": "unknown", "images": [],
             "error": f"不支持的文件类型: {ext}"}
 
@@ -93,6 +100,73 @@ def _read_pdf(file_path: str, registry, ocr_engine: str) -> dict:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception:  # noqa: BLE001
                 pass
+
+
+# ─── 多页 TIFF ──────────────────────────────────────────────
+def _read_tiff(file_path: str, registry, ocr_engine: str) -> dict:
+    """多页 TIFF: 逐页 OCR (历史扫描件常见格式)。"""
+    try:
+        from PIL import Image
+    except ImportError:
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": "缺少 Pillow, 请 `pip install Pillow`"}
+
+    try:
+        img = Image.open(file_path)
+    except Exception as e:  # noqa: BLE001
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": f"TIFF 打开失败: {e}"}
+
+    pages_text: list[str] = []
+    tmpdir = tempfile.mkdtemp(prefix="visionocr_tiff_")
+    try:
+        page_idx = 0
+        while True:
+            try:
+                img.seek(page_idx)
+            except EOFError:
+                break
+            page_path = os.path.join(tmpdir, f"page_{page_idx:03d}.png")
+            img.convert("RGB").save(page_path, "PNG")
+            pages_text.append(_ocr_image(page_path, registry, ocr_engine))
+            page_idx += 1
+    finally:
+        img.close()
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {
+        "text": "\n\n".join(t for t in pages_text if t.strip()),
+        "pages": len(pages_text),
+        "source": "ocr",
+        "images": [file_path],
+    }
+
+
+# ─── HEIC/HEIF (iPhone 默认格式) ────────────────────────────
+def _read_heic(file_path: str, registry, ocr_engine: str) -> dict:
+    """HEIC/HEIF: 通过 pillow-heif 转为 PNG 后 OCR。"""
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+        from PIL import Image
+    except ImportError:
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": "缺少 pillow-heif, 请 `pip install pillow-heif`"}
+
+    try:
+        img = Image.open(file_path)
+        tmpdir = tempfile.mkdtemp(prefix="visionocr_heic_")
+        png_path = os.path.join(tmpdir, "converted.png")
+        img.convert("RGB").save(png_path, "PNG")
+        img.close()
+        text = _ocr_image(png_path, registry, ocr_engine)
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return {"text": text, "pages": 1, "source": "ocr", "images": [file_path]}
+    except Exception as e:  # noqa: BLE001
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": f"HEIC 处理失败: {e}"}
 
 
 # ─── 图片 OCR ────────────────────────────────────────────────
