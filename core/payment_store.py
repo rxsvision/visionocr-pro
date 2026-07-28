@@ -155,7 +155,20 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
     today = today or date.today()
     fired: list[dict] = []
 
-    for row in list_receivables(conn):
+    # 仅对已复核合同 (reviewed=1) 的应收触发提醒
+    sql = """
+        SELECT r.id, c.title AS contract_title, c.file_path, c.signer,
+               r.due_date, r.amount, r.currency, r.condition_text,
+               r.direction, r.status, r.source,
+               r.reminded_7d, r.reminded_3d, r.reminded_1d, r.reminded_overdue
+        FROM receivables r
+        JOIN contracts c ON r.contract_id = c.id
+        WHERE c.reviewed = 1
+        ORDER BY (r.due_date IS NULL), r.due_date ASC
+    """
+    rows = [dict(r) for r in conn.execute(sql).fetchall()]
+
+    for row in rows:
         if row["status"] != "pending" or not row["due_date"]:
             continue
         try:
@@ -222,10 +235,111 @@ def log_error(conn: sqlite3.Connection, stage: str, error_code: str,
     return int(cur.lastrowid)
 
 
-def list_errors(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """按时间倒序列出最近错误。"""
-    sql = """SELECT * FROM error_log ORDER BY id DESC LIMIT ?"""
-    return [dict(r) for r in conn.execute(sql, (limit,)).fetchall()]
+def list_errors(conn: sqlite3.Connection, limit: int = 50,
+                stage: str = "", error_code: str = "",
+                file_path: str = "") -> list[dict]:
+    """按时间倒序列出最近错误, 支持按阶段/错误码/文件筛选。"""
+    clauses, params = [], []
+    if stage:
+        clauses.append("stage = ?")
+        params.append(stage)
+    if error_code:
+        clauses.append("error_code LIKE ?")
+        params.append(f"%{error_code}%")
+    if file_path:
+        clauses.append("file_path LIKE ?")
+        params.append(f"%{file_path}%")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"SELECT * FROM error_log {where} ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+# ─── 人工复核门控 ────────────────────────────────────────────
+def list_pending_review(conn: sqlite3.Connection) -> list[dict]:
+    """列出所有待复核合同 (reviewed=0), 按置信度升序 (低的排前面)。"""
+    sql = """SELECT id, file_path, contract_no, title, our_party, counterparty,
+                    signer, total_amount, currency, direction,
+                    confidence, extract_source, created_at
+             FROM contracts WHERE reviewed = 0
+             ORDER BY confidence ASC, id DESC"""
+    return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def get_contract_detail(conn: sqlite3.Connection, contract_id: int) -> Optional[dict]:
+    """获取单份合同完整信息 (含原文 + 结构化 JSON + 应收条目)。"""
+    row = conn.execute(
+        "SELECT * FROM contracts WHERE id = ?", (contract_id,)
+    ).fetchone()
+    if not row:
+        return None
+    detail = dict(row)
+    detail["receivables"] = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM receivables WHERE contract_id = ?", (contract_id,)
+        ).fetchall()
+    ]
+    return detail
+
+
+def update_contract_fields(conn: sqlite3.Connection, contract_id: int,
+                           fields: dict) -> None:
+    """人工修正合同字段 (仅允许白名单列)。"""
+    allowed = {"contract_no", "title", "our_party", "counterparty", "signer",
+               "start_date", "end_date", "total_amount", "currency", "direction"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k} = ?")
+            params.append(v)
+    if not sets:
+        return
+    params.append(contract_id)
+    conn.execute(f"UPDATE contracts SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+
+
+def update_receivable_fields(conn: sqlite3.Connection, receivable_id: int,
+                             fields: dict) -> None:
+    """人工修正应收条目字段。"""
+    allowed = {"due_date", "amount", "currency", "condition_text", "penalty",
+               "direction", "status"}
+    sets, params = [], []
+    for k, v in fields.items():
+        if k in allowed:
+            sets.append(f"{k} = ?")
+            params.append(v)
+    if not sets:
+        return
+    params.append(receivable_id)
+    conn.execute(f"UPDATE receivables SET {', '.join(sets)} WHERE id = ?", params)
+    conn.commit()
+
+
+def mark_reviewed(conn: sqlite3.Connection, contract_id: int) -> None:
+    """确认复核通过, 合同正式进入回款日程。"""
+    conn.execute("UPDATE contracts SET reviewed = 1 WHERE id = ?", (contract_id,))
+    conn.commit()
+
+
+def reject_contract(conn: sqlite3.Connection, contract_id: int,
+                    reason: str = "") -> None:
+    """驳回合同 (标记为 terminated + 记录原因)。"""
+    conn.execute(
+        "UPDATE contracts SET reviewed = 1, status = 'terminated' WHERE id = ?",
+        (contract_id,),
+    )
+    if reason:
+        log_error(conn, "review", "REJECTED", reason,
+                  file_path=_get_file_path(conn, contract_id))
+    conn.commit()
+
+
+def _get_file_path(conn: sqlite3.Connection, contract_id: int) -> str:
+    row = conn.execute(
+        "SELECT file_path FROM contracts WHERE id = ?", (contract_id,)
+    ).fetchone()
+    return row[0] if row else ""
 
 
 # ─── 向后兼容别名 (Phase 2 调用方) ──────────────────────────
