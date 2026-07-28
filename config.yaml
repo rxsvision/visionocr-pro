@@ -25,6 +25,11 @@ notify:
   feishu_webhook: ""          # 飞书群机器人: https://open.feishu.cn/open-apis/bot/v2/hook/{token}
   wecom_webhook: ""           # 企微群机器人: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key}
   desktop_fallback: true      # IM 未配置/失败时回退桌面通知
+  # 默认联系人: 签单人缺失或映射表查不到时, 提醒发给此人 (老板指定)
+  default_contact:
+    name: ""                  # 如 "王总"
+    feishu_id: ""
+    wecom_id: ""
 
 # 模型下载源: huggingface | modelscope | local
 model_source: "huggingface"

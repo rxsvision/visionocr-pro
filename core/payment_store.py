@@ -214,17 +214,38 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
 
 def _send_reminder(conn: sqlite3.Connection, config: Optional[dict],
                    signer: str, message: str) -> None:
-    """发送提醒: 有 config 时走 IM (飞书/企微), 否则桌面通知。"""
-    if config and signer:
-        from core.notifier import notify_signer
-        smap = get_signer_by_name(conn, signer)
-        notify_signer(
-            config, signer, message,
-            feishu_id=(smap or {}).get("feishu_id", ""),
-            wecom_id=(smap or {}).get("wecom_id", ""),
-        )
-    else:
+    """发送提醒: 有 config 时走 IM (飞书/企微), 否则桌面通知。
+
+    业务规则: 签单人缺失或映射表查不到 → 降级通知老板指定的默认联系人。
+    """
+    if not config:
         notify("回款提醒", message)
+        return
+
+    from core.notifier import notify_signer
+    ncfg = config.get("notify", {}) or {}
+    feishu_id, wecom_id, target_name = "", "", signer
+
+    if signer:
+        smap = get_signer_by_name(conn, signer)
+        if smap:
+            feishu_id = smap.get("feishu_id", "")
+            wecom_id = smap.get("wecom_id", "")
+        else:
+            # 映射表未收录 → 降级默认联系人
+            target_name = ""
+
+    if not signer or (not feishu_id and not wecom_id):
+        # 签单人缺失 或 无 IM 账号 → 用默认联系人
+        dc = ncfg.get("default_contact", {}) or {}
+        if dc.get("name"):
+            target_name = dc["name"]
+            feishu_id = dc.get("feishu_id", "")
+            wecom_id = dc.get("wecom_id", "")
+            message = f"[默认联系人] {message}"
+
+    notify_signer(config, target_name or "未指定", message,
+                  feishu_id=feishu_id, wecom_id=wecom_id)
 
 
 def _level(days_left: int) -> tuple[Optional[str], str]:
