@@ -25,7 +25,9 @@ from core.payment_store import (
     update_contract_fields, update_receivable_fields,
     mark_reviewed, reject_contract,
     upsert_signer, list_signers, delete_signer, outstanding_by_signer,
+    save_risk_alerts, list_risk_alerts, list_contracts_with_risks,
 )
+from core.risk_engine import scan_risks
 from engines.llm.router import route_extract, get_llm
 
 _registry = None
@@ -168,6 +170,20 @@ def create_tab_contract(config: dict, registry):
         )
         schedule_refresh_btn = gr.Button("刷新汇总")
 
+    # ─── 风险预警面板 ────────────────────────────────────────
+    with gr.Accordion("合同风险预警 (红=高风险 / 黄=需关注)", open=False):
+        risk_summary_table = gr.Dataframe(
+            headers=["合同", "风险数", "红色", "置信度", "已复核"],
+            label="风险合同总览",
+            wrap=True,
+        )
+        risk_detail_table = gr.Dataframe(
+            headers=["级别", "规则", "消息", "证据"],
+            label="风险明细 (红色优先)",
+            wrap=True,
+        )
+        risk_refresh_btn = gr.Button("刷新风险预警")
+
     # ─── 事件绑定 ────────────────────────────────────────────
     extract_btn.click(
         fn=_extract_contracts, inputs=[file_upload],
@@ -216,6 +232,10 @@ def create_tab_contract(config: dict, registry):
 
     # 回款日程
     schedule_refresh_btn.click(fn=_refresh_schedule, outputs=[schedule_table])
+
+    # 风险预警
+    risk_refresh_btn.click(
+        fn=_refresh_risks, outputs=[risk_summary_table, risk_detail_table])
 
 
 # ─── 提取回调 ────────────────────────────────────────────────
@@ -270,14 +290,23 @@ def _extract_contracts(files) -> tuple[list[list], str]:
                 total_items += n
                 ok_count += 1
 
+                # 风险扫描
+                alerts = scan_risks(result, text)
+                if alerts:
+                    save_risk_alerts(conn, cid, alerts)
+
                 warn_str = ""
                 if result.get("warnings"):
                     warn_str = " · ⚠ " + "; ".join(result["warnings"][:2])
+                risk_str = ""
+                if alerts:
+                    red_n = sum(1 for a in alerts if a["level"] == "red")
+                    risk_str = f" · 🚨 {len(alerts)}项风险({red_n}红)"
                 conf = result.get("confidence", 0)
                 flag = "🔴" if conf < 0.6 else "✓"
                 statuses.append(
                     f"{flag} {name} · {doc['pages']}页 · {doc['source']} · "
-                    f"[{tier}] 抽取 {n} 条应收 · 置信度 {conf:.0%}{warn_str}"
+                    f"[{tier}] 抽取 {n} 条应收 · 置信度 {conf:.0%}{warn_str}{risk_str}"
                 )
             except Exception as e:  # noqa: BLE001
                 fail_count += 1
@@ -589,3 +618,33 @@ def _refresh_schedule() -> list[list]:
          f"{r.get('total_outstanding', 0):,.2f}"]
         for r in rows
     ]
+
+
+# ─── 风险预警回调 ────────────────────────────────────────────
+def _refresh_risks() -> tuple[list[list], list[list]]:
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    summary_rows = list_contracts_with_risks(conn)
+    detail_rows = list_risk_alerts(conn)
+    conn.close()
+
+    summary = [
+        [
+            r.get("title") or os.path.basename(r.get("file_path") or ""),
+            r.get("risk_count") or 0,
+            f"🔴 {r.get('red_count') or 0}",
+            f"{r.get('confidence', 0):.0%}",
+            "是" if r.get("reviewed") else "否",
+        ]
+        for r in summary_rows
+    ]
+    detail = [
+        [
+            "🔴" if r.get("level") == "red" else "🟡",
+            r.get("rule") or "—",
+            (r.get("message") or "")[:80],
+            (r.get("evidence") or "")[:60],
+        ]
+        for r in detail_rows
+    ]
+    return summary, detail

@@ -462,6 +462,55 @@ def outstanding_by_signer(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
+# ─── 风险预警 ────────────────────────────────────────────────
+def save_risk_alerts(conn: sqlite3.Connection, contract_id: int,
+                     alerts: list[dict]) -> int:
+    """批量写入风险预警, 返回写入数量。"""
+    rows = [
+        (contract_id, a.get("level", "yellow"), a.get("rule", ""),
+         a.get("message", ""), a.get("evidence", ""))
+        for a in alerts
+    ]
+    conn.executemany(
+        "INSERT INTO risk_alert (contract_id, level, rule, message, evidence) "
+        "VALUES (?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def list_risk_alerts(conn: sqlite3.Connection,
+                     contract_id: Optional[int] = None) -> list[dict]:
+    """列出风险预警 (可按合同筛选), 按 red 优先 + 时间倒序。"""
+    if contract_id:
+        sql = """SELECT ra.*, c.title, c.file_path
+                 FROM risk_alert ra LEFT JOIN contracts c ON ra.contract_id = c.id
+                 WHERE ra.contract_id = ?
+                 ORDER BY (ra.level != 'red'), ra.id DESC"""
+        rows = conn.execute(sql, (contract_id,)).fetchall()
+    else:
+        sql = """SELECT ra.*, c.title, c.file_path
+                 FROM risk_alert ra LEFT JOIN contracts c ON ra.contract_id = c.id
+                 ORDER BY (ra.level != 'red'), ra.id DESC LIMIT 200"""
+        rows = conn.execute(sql).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_contracts_with_risks(conn: sqlite3.Connection) -> list[dict]:
+    """列出有风险预警的合同 (去重), red 优先。"""
+    sql = """
+        SELECT c.id, c.title, c.file_path, c.confidence, c.reviewed,
+               COUNT(ra.id) AS risk_count,
+               SUM(CASE WHEN ra.level='red' THEN 1 ELSE 0 END) AS red_count
+        FROM contracts c
+        JOIN risk_alert ra ON ra.contract_id = c.id
+        GROUP BY c.id
+        ORDER BY red_count DESC, risk_count DESC
+    """
+    return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
 # ─── 向后兼容别名 (Phase 2 调用方) ──────────────────────────
 def save_payments(conn: sqlite3.Connection, contract_id: int,
                   payments: list[dict]) -> int:
