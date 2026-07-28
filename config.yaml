@@ -14,10 +14,26 @@ company:
   name: ""                    # 填入公司全称, 如 "苏州锐新视科技有限公司"
   aliases: []                 # 简称/别名列表, 如 ["锐新视", "RXS"]
 
-# 合同汇总导出 (Excel/数据库落盘到指定文件夹, 供查询)
+# 合同汇总导出 (插件化: excel/csv/yonyou/kingdee, 按需启用)
 export:
-  dir: "exports"              # 相对项目根或绝对路径
-  excel_summary: true         # 导出双 sheet 汇总 (合同主表 + 回款明细)
+  dir: "exports"              # 导出文件落盘目录 (相对项目根或绝对路径)
+  enabled:                    # 启用的导出器列表
+    - "excel"                 # 双 Sheet Excel (合同总览 + 应收明细)
+    - "csv"                   # 通用 CSV (utf-8-sig, 适配无API系统导入)
+    # - "yonyou"              # 用友 U8/T+/YonSuite (需配置下方凭据)
+    # - "kingdee"             # 金蝶 K3/云星空 (需配置下方凭据)
+  # 用友 ERP 对接 (试点工厂填入实际地址和凭据后取消注释 enabled)
+  yonyou:
+    base_url: ""              # 如 http://192.168.1.100:8080
+    app_key: ""
+    app_secret: ""
+  # 金蝶 ERP 对接
+  kingdee:
+    base_url: ""              # 如 http://192.168.1.200/k3cloud
+    acct_id: ""               # 账套ID
+    username: ""
+    password: ""
+    lcid: 2052                # 语言 (2052=中文)
 
 # IM 通知 (回款提醒推送给签单人)
 # 使用群机器人 Webhook, 无需 OAuth 审批; 配合 signer_map 表 @mention 对应签单人
