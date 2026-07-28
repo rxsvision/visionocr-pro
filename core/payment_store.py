@@ -511,6 +511,167 @@ def list_contracts_with_risks(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
+# ─── Phase 3F: 看板数据 ─────────────────────────────────────
+def dashboard_kpi(conn: sqlite3.Connection) -> dict:
+    """汇总 KPI: 合同数/应收总额/已收/未收/逾期数/风险数/待复核数。"""
+    row = conn.execute("""
+        SELECT
+            COUNT(DISTINCT c.id) AS contract_count,
+            COALESCE(SUM(r.amount), 0) AS total_receivable,
+            COALESCE((SELECT SUM(amount) FROM collections), 0) AS total_collected,
+            SUM(CASE WHEN r.status = 'overdue' THEN 1 ELSE 0 END) AS overdue_items,
+            COALESCE(SUM(CASE WHEN r.status = 'overdue' THEN r.amount ELSE 0 END), 0)
+                AS overdue_amount
+        FROM contracts c
+        LEFT JOIN receivables r ON r.contract_id = c.id
+        WHERE c.status = 'active'
+    """).fetchone()
+    risk_row = conn.execute(
+        "SELECT COUNT(*) AS n, SUM(CASE WHEN level='red' THEN 1 ELSE 0 END) AS red "
+        "FROM risk_alert"
+    ).fetchone()
+    pending = conn.execute(
+        "SELECT COUNT(*) AS n FROM contracts WHERE reviewed = 0 AND status = 'active'"
+    ).fetchone()
+    total_recv = row["total_receivable"] or 0
+    total_coll = row["total_collected"] or 0
+    return {
+        "contract_count": row["contract_count"] or 0,
+        "total_receivable": total_recv,
+        "total_collected": total_coll,
+        "total_outstanding": max(total_recv - total_coll, 0),
+        "overdue_items": row["overdue_items"] or 0,
+        "overdue_amount": row["overdue_amount"] or 0,
+        "risk_count": risk_row["n"] or 0,
+        "risk_red": risk_row["red"] or 0,
+        "pending_review": pending["n"] or 0,
+    }
+
+
+def monthly_trend(conn: sqlite3.Connection, months: int = 12) -> list[dict]:
+    """按月聚合应收 vs 实收 (最近 N 个月)。
+
+    Returns: [{"month": "2026-07", "receivable": 100000, "collected": 50000}, ...]
+    """
+    # 应收: 按 due_date 月份聚合
+    recv_sql = """
+        SELECT strftime('%Y-%m', due_date) AS month, SUM(amount) AS total
+        FROM receivables
+        WHERE due_date IS NOT NULL AND due_date != ''
+          AND due_date >= date('now', ? || ' months')
+        GROUP BY month
+    """
+    # 实收: 按 collected_at 月份聚合
+    coll_sql = """
+        SELECT strftime('%Y-%m', collected_at) AS month, SUM(amount) AS total
+        FROM collections
+        WHERE collected_at >= date('now', ? || ' months')
+        GROUP BY month
+    """
+    offset = f"-{months}"
+    recv_map = {r["month"]: r["total"] for r in conn.execute(recv_sql, (offset,)).fetchall()}
+    coll_map = {r["month"]: r["total"] for r in conn.execute(coll_sql, (offset,)).fetchall()}
+    all_months = sorted(set(recv_map) | set(coll_map))
+    return [
+        {"month": m, "receivable": recv_map.get(m, 0), "collected": coll_map.get(m, 0)}
+        for m in all_months
+    ]
+
+
+def overdue_ranking(conn: sqlite3.Connection,
+                    by: str = "signer") -> list[dict]:
+    """逾期排行: 按签单人或合同聚合逾期金额。
+
+    by: "signer" | "contract"
+    """
+    if by == "contract":
+        sql = """
+            SELECT c.id, c.title, c.file_path, c.signer,
+                   SUM(r.amount) AS overdue_amount,
+                   COUNT(r.id) AS overdue_items
+            FROM receivables r
+            JOIN contracts c ON r.contract_id = c.id
+            WHERE r.status = 'overdue' AND c.status = 'active'
+            GROUP BY c.id
+            ORDER BY overdue_amount DESC
+            LIMIT 50
+        """
+    else:
+        sql = """
+            SELECT c.signer,
+                   SUM(r.amount) AS overdue_amount,
+                   COUNT(r.id) AS overdue_items,
+                   COUNT(DISTINCT c.id) AS contract_count
+            FROM receivables r
+            JOIN contracts c ON r.contract_id = c.id
+            WHERE r.status = 'overdue' AND c.status = 'active'
+            GROUP BY c.signer
+            ORDER BY overdue_amount DESC
+            LIMIT 50
+        """
+    return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def filter_contracts(conn: sqlite3.Connection, *,
+                     signer: str = "",
+                     direction: str = "",
+                     reviewed: str = "",
+                     date_from: str = "",
+                     date_to: str = "",
+                     amount_min: float | None = None,
+                     amount_max: float | None = None,
+                     ) -> list[dict]:
+    """多维筛选合同 (Phase 3F)。
+
+    所有条件均为可选, 空字符串/None 表示不过滤。
+    """
+    clauses: list[str] = []
+    params: list = []
+
+    if signer:
+        clauses.append("c.signer LIKE ?")
+        params.append(f"%{signer}%")
+    if direction:
+        clauses.append("c.direction = ?")
+        params.append(direction)
+    if reviewed == "yes":
+        clauses.append("c.reviewed = 1")
+    elif reviewed == "no":
+        clauses.append("c.reviewed = 0")
+    if date_from:
+        clauses.append("c.created_at >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("c.created_at <= ?")
+        params.append(date_to + " 23:59:59")
+    if amount_min is not None:
+        clauses.append("c.total_amount >= ?")
+        params.append(amount_min)
+    if amount_max is not None:
+        clauses.append("c.total_amount <= ?")
+        params.append(amount_max)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""
+        SELECT c.*,
+               COALESCE((SELECT SUM(col.amount) FROM collections col
+                         WHERE col.contract_id = c.id), 0) AS collected_sum
+        FROM contracts c
+        {where}
+        ORDER BY c.created_at DESC
+        LIMIT 500
+    """
+    rows = conn.execute(sql, params).fetchall()
+    results = []
+    for r in rows:
+        d = dict(r)
+        total = d.get("total_amount") or 0
+        coll = d.get("collected_sum") or 0
+        d["outstanding"] = max(total, 0) - coll
+        results.append(d)
+    return results
+
+
 # ─── 向后兼容别名 (Phase 2 调用方) ──────────────────────────
 def save_payments(conn: sqlite3.Connection, contract_id: int,
                   payments: list[dict]) -> int:

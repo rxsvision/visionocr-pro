@@ -1,10 +1,11 @@
-"""合同自动化 Tab (Phase 3B)
+"""合同自动化 Tab (Phase 3F)
 
 管线: 上传合同 → 文档读取(PDF文本/OCR) → 分级LLM抽取(本地优先/云端兜底/规则兜底)
       → 方向判定 + 金额勾稽 → 落库(contracts + receivables) → 人工复核门控 → 应收计划表
 复核: 低置信度标红, 原文对照 + 字段可编辑 + 确认/驳回, reviewed=1 后才进入回款日程。
 提醒: 扫描已复核合同的 pending 应收, 逾期/7/3/1 天四级桌面通知。
 错误: 结构化错误定位面板, 按阶段/错误码/文件筛选。
+看板: KPI 卡片 + 多维筛选 + 月度趋势图 + 逾期排行 (Phase 3F)。
 """
 from __future__ import annotations
 
@@ -26,6 +27,7 @@ from core.payment_store import (
     mark_reviewed, reject_contract,
     upsert_signer, list_signers, delete_signer, outstanding_by_signer,
     save_risk_alerts, list_risk_alerts, list_contracts_with_risks,
+    dashboard_kpi, monthly_trend, overdue_ranking, filter_contracts,
 )
 from core.risk_engine import scan_risks
 from engines.llm.router import route_extract, get_llm
@@ -48,6 +50,47 @@ def _get_config() -> dict:
 
 def create_tab_contract(config: dict, registry):
     set_registry(registry)
+
+    # ─── Phase 3F: 数据看板 ─────────────────────────────────
+    with gr.Accordion("数据看板 (KPI · 趋势 · 逾期排行 · 多维筛选)", open=True):
+        kpi_display = gr.Markdown("点击「刷新看板」加载数据")
+        with gr.Row():
+            dash_refresh_btn = gr.Button("刷新看板", variant="primary", scale=1)
+            dash_months = gr.Slider(3, 24, value=12, step=1,
+                                    label="趋势月数", scale=2)
+        trend_plot = gr.Plot(label="月度应收 vs 实收趋势")
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("#### 逾期排行")
+                rank_by = gr.Dropdown(choices=["按签单人", "按合同"],
+                                      value="按签单人", label="维度")
+                rank_table = gr.Dataframe(
+                    headers=["签单人", "逾期金额", "逾期笔数", "合同数"],
+                    label="逾期排行",
+                    wrap=True,
+                )
+            with gr.Column(scale=2):
+                gr.Markdown("#### 多维筛选")
+                with gr.Row():
+                    f_signer = gr.Textbox(label="签单人 (模糊)", scale=2)
+                    f_direction = gr.Dropdown(
+                        label="方向", choices=["", "receivable", "payable"],
+                        value="", scale=1)
+                    f_reviewed = gr.Dropdown(
+                        label="复核", choices=["", "yes", "no"],
+                        value="", scale=1)
+                with gr.Row():
+                    f_date_from = gr.Textbox(label="起始日 (YYYY-MM-DD)", scale=1)
+                    f_date_to = gr.Textbox(label="截止日 (YYYY-MM-DD)", scale=1)
+                    f_amt_min = gr.Number(label="最小金额", scale=1)
+                    f_amt_max = gr.Number(label="最大金额", scale=1)
+                filter_btn = gr.Button("筛选", variant="secondary")
+                filter_table = gr.Dataframe(
+                    headers=["合同", "编号", "签单人", "对方", "总额",
+                             "已收", "未收", "方向", "复核", "置信度"],
+                    label="筛选结果",
+                    wrap=True,
+                )
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -236,6 +279,21 @@ def create_tab_contract(config: dict, registry):
     # 风险预警
     risk_refresh_btn.click(
         fn=_refresh_risks, outputs=[risk_summary_table, risk_detail_table])
+
+    # Phase 3F 看板
+    dash_refresh_btn.click(
+        fn=_refresh_dashboard, inputs=[dash_months, rank_by],
+        outputs=[kpi_display, trend_plot, rank_table],
+    )
+    rank_by.change(
+        fn=_refresh_rank, inputs=[rank_by], outputs=[rank_table],
+    )
+    filter_btn.click(
+        fn=_filter_contracts_ui,
+        inputs=[f_signer, f_direction, f_reviewed,
+                f_date_from, f_date_to, f_amt_min, f_amt_max],
+        outputs=[filter_table],
+    )
 
 
 # ─── 提取回调 ────────────────────────────────────────────────
@@ -617,3 +675,143 @@ def _refresh_risks() -> tuple[list[list], list[list]]:
         for r in detail_rows
     ]
     return summary, detail
+
+
+# ─── Phase 3F: 看板回调 ─────────────────────────────────────
+def _refresh_dashboard(months, rank_dim) -> tuple:
+    """刷新 KPI + 趋势图 + 逾期排行。"""
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    try:
+        kpi = dashboard_kpi(conn)
+        trend = monthly_trend(conn, months=int(months or 12))
+        by = "contract" if rank_dim == "按合同" else "signer"
+        ranks = overdue_ranking(conn, by=by)
+    finally:
+        conn.close()
+
+    # KPI Markdown 卡片
+    kpi_md = (
+        f"| 指标 | 数值 | 指标 | 数值 |\n"
+        f"|---|---|---|---|\n"
+        f"| 合同总数 | **{kpi['contract_count']}** "
+        f"| 待复核 | **{kpi['pending_review']}** |\n"
+        f"| 应收总额 | **{kpi['total_receivable']:,.0f}** "
+        f"| 已收总额 | **{kpi['total_collected']:,.0f}** |\n"
+        f"| 未收余额 | **{kpi['total_outstanding']:,.0f}** "
+        f"| 逾期笔数 | **{kpi['overdue_items']}** |\n"
+        f"| 逾期金额 | **{kpi['overdue_amount']:,.0f}** "
+        f"| 风险预警 | **{kpi['risk_count']}** (🔴{kpi['risk_red']}) |\n"
+    )
+
+    # 趋势图
+    fig = _build_trend_chart(trend)
+
+    # 逾期排行
+    rank_table = _format_rank(ranks, by)
+
+    return kpi_md, fig, rank_table
+
+
+def _refresh_rank(rank_dim) -> list[list]:
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    by = "contract" if rank_dim == "按合同" else "signer"
+    ranks = overdue_ranking(conn, by=by)
+    conn.close()
+    return _format_rank(ranks, by)
+
+
+def _format_rank(ranks: list[dict], by: str) -> list[list]:
+    if not ranks:
+        return [["暂无逾期数据", "—", "—", "—"]]
+    table = []
+    for r in ranks:
+        if by == "contract":
+            name = r.get("title") or os.path.basename(r.get("file_path") or "")
+            table.append([
+                name[:30],
+                f"{r.get('overdue_amount', 0):,.2f}",
+                r.get("overdue_items") or 0,
+                r.get("signer") or "—",
+            ])
+        else:
+            table.append([
+                r.get("signer") or "未指定",
+                f"{r.get('overdue_amount', 0):,.2f}",
+                r.get("overdue_items") or 0,
+                r.get("contract_count") or 0,
+            ])
+    return table
+
+
+def _build_trend_chart(trend: list[dict]):
+    """用 matplotlib 绘制月度应收 vs 实收柱状图。"""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu Sans"]
+        plt.rcParams["axes.unicode_minus"] = False
+
+        if not trend:
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.text(0.5, 0.5, "暂无趋势数据", ha="center", va="center", fontsize=14)
+            ax.set_axis_off()
+            return fig
+
+        months = [t["month"] for t in trend]
+        recv = [t["receivable"] / 10000 for t in trend]
+        coll = [t["collected"] / 10000 for t in trend]
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        x = range(len(months))
+        width = 0.35
+        ax.bar([i - width / 2 for i in x], recv, width, label="应收", color="#4A90D9")
+        ax.bar([i + width / 2 for i in x], coll, width, label="实收", color="#67C23A")
+        ax.set_xticks(list(x))
+        ax.set_xticklabels(months, rotation=45, ha="right", fontsize=8)
+        ax.set_ylabel("金额 (万元)")
+        ax.set_title("月度应收 vs 实收")
+        ax.legend()
+        fig.tight_layout()
+        return fig
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _filter_contracts_ui(signer, direction, reviewed,
+                         date_from, date_to, amt_min, amt_max) -> list[list]:
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    rows = filter_contracts(
+        conn,
+        signer=signer or "",
+        direction=direction or "",
+        reviewed=reviewed or "",
+        date_from=date_from or "",
+        date_to=date_to or "",
+        amount_min=amt_min if amt_min else None,
+        amount_max=amt_max if amt_max else None,
+    )
+    conn.close()
+    if not rows:
+        return [["无匹配结果", "—", "—", "—", "—", "—", "—", "—", "—", "—"]]
+    table = []
+    for r in rows:
+        title = r.get("title") or os.path.basename(r.get("file_path") or "")
+        total = r.get("total_amount")
+        table.append([
+            title[:25],
+            r.get("contract_no") or "—",
+            r.get("signer") or "—",
+            (r.get("counterparty") or "—")[:15],
+            f"{total:,.0f}" if isinstance(total, (int, float)) else "—",
+            f"{r.get('collected_sum', 0):,.0f}",
+            f"{r.get('outstanding', 0):,.0f}",
+            _direction_label(r.get("direction")),
+            "是" if r.get("reviewed") else "否",
+            f"{r.get('confidence', 0):.0%}",
+        ])
+    return table
