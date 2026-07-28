@@ -14,6 +14,14 @@ import os
 import tempfile
 from typing import Any
 
+try:
+    import cv2
+    import numpy as np
+    from core.image_preprocess import preprocess_image
+    _HAS_CV2 = True
+except ImportError:
+    _HAS_CV2 = False
+
 # 文本层最少字符数阈值: 低于此值判定为扫描件, 走 OCR
 _MIN_TEXT_CHARS = 30
 
@@ -56,11 +64,11 @@ def _read_pdf(file_path: str, registry, ocr_engine: str) -> dict:
             if len(txt.strip()) >= _MIN_TEXT_CHARS:
                 pages_text.append(txt)
                 continue
-            # 扫描件: 渲染为 200dpi 图片后 OCR
+            # 扫描件: 渲染为 300dpi 图片后 OCR (审查后从 200 提升)
             need_ocr = True
             if tmpdir is None:
                 tmpdir = tempfile.mkdtemp(prefix="visionocr_pdf_")
-            pix = page.get_pixmap(dpi=200)
+            pix = page.get_pixmap(dpi=300)
             img_path = os.path.join(tmpdir, f"page_{i:03d}.png")
             pix.save(img_path)
             rendered.append(img_path)
@@ -92,11 +100,30 @@ def _ocr_image(image_path: str, registry, ocr_engine: str) -> str:
     if registry is None:
         return ""
     try:
+        # 图像预处理 (对比度/纠偏/降噪/放大) — 提升工业相机/手机/扫描件识别率
+        ocr_path = image_path
+        if _HAS_CV2:
+            img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            if img is not None:
+                processed = preprocess_image(img)
+                # 写入临时文件供引擎读取
+                tmp_pp = image_path + ".pp.png"
+                cv2.imwrite(tmp_pp, processed)
+                ocr_path = tmp_pp
+
         engine = registry.ensure_loaded(ocr_engine)
         if not engine.is_ready():
             engine = registry.ensure_loaded("rapidocr")
-        result = engine.infer(image_path)
-        return result.get("text", "") if isinstance(result, dict) else ""
+        result = engine.infer(ocr_path)
+        text = result.get("text", "") if isinstance(result, dict) else ""
+
+        # 清理预处理临时文件
+        if ocr_path != image_path and os.path.exists(ocr_path):
+            try:
+                os.remove(ocr_path)
+            except OSError:
+                pass
+        return text
     except Exception as e:  # noqa: BLE001
         print(f"[ContractReader] OCR 失败 {image_path}: {e}")
         return ""

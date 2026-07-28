@@ -154,12 +154,15 @@ def _grab_camera():
         config = registry.config
         cam = create_camera(config)
         if cam.open():
-            frame = cam.grab()
-            cam.close()
+            try:
+                frame = cam.grab()
+            finally:
+                cam.close()  # M4 修复: 确保设备句柄释放
             if frame is not None:
                 import cv2
                 import tempfile
-                tmp = Path(tempfile.gettempdir()) / "visionocr_capture.jpg"
+                # PNG 无损, 避免 JPEG 压缩伪影影响 OCR 精度
+                tmp = Path(tempfile.gettempdir()) / "visionocr_capture.png"
                 cv2.imwrite(str(tmp), frame)
                 return str(tmp)
     except Exception as e:
