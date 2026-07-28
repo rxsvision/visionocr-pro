@@ -17,6 +17,11 @@ def load_config(path: Path | str | None = None) -> dict:
         val = cfg.get(key, key.replace("_dir", "s"))
         p = Path(val)
         cfg[key] = str(p if p.is_absolute() else root / p)
+    # export.dir 嵌套路径解析
+    export_cfg = cfg.get("export", {})
+    if isinstance(export_cfg, dict) and export_cfg.get("dir"):
+        ep = Path(export_cfg["dir"])
+        export_cfg["dir"] = str(ep if ep.is_absolute() else root / ep)
     return cfg
 
 
@@ -27,11 +32,20 @@ def _defaults() -> dict:
         "server_port": 7860,
         "models_dir": str(root / "models"),
         "data_dir": str(root / "data"),
+        "company": {"name": "", "aliases": []},
+        "export": {"dir": str(root / "exports"), "excel_summary": True},
         "model_source": "huggingface",
         "device": "auto",
         "vram": {"max_budget_gb": 12, "idle_unload_sec": 300, "quantization": "q4"},
         "ocr": {"default_engine": "auto"},
-        "llm": {"provider": "ollama", "ollama": {"model": "qwen3-vl:8b"}},
+        "llm": {
+            "routing": {"policy": "local_first_cloud_fallback",
+                        "confidence_threshold": 0.6,
+                        "escalate_on_validation_fail": True},
+            "ollama": {"model": "qwen3-vl:8b", "host": "http://localhost:11434", "timeout": 600},
+            "api": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
+                    "api_key": "", "timeout": 120},
+        },
         "camera": {"type": "opencv", "index": 0},
         "barcode": {"engine": "zbar"},
         "qc": {"anomaly_algorithm": "dinomaly", "confidence_threshold": 0.5},

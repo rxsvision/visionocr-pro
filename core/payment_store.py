@@ -1,8 +1,10 @@
-"""付款计划存储与到期提醒 (Phase 2)
+"""合同/应收存储与到期提醒 (Phase 3A)
 
 职责:
-- 把抽取出的付款条目落库 (contracts + payments 两表)。
-- 按 7/3/1 天三级阈值扫描到期项, 触发桌面通知并标记 reminded_*。
+- 把抽取结果落库 (contracts + receivables 两表)。
+- 实收登记 (collections), 计算未收余额。
+- 按 逾期/7/3/1 天四级阈值扫描到期项, 触发通知并标记 reminded_*。
+- 结构化错误日志 (error_log), 支持按阶段/字段快速定位。
 """
 from __future__ import annotations
 
@@ -16,19 +18,50 @@ from core.notifications import notify
 
 
 # ─── 写入 ────────────────────────────────────────────────────
-def save_contract(conn: sqlite3.Connection, file_path: str, title: str,
-                  parties: str, raw_text: str, structured: dict) -> int:
-    """写入合同主记录, 返回 contract_id。"""
+def save_contract(conn: sqlite3.Connection, file_path: str,
+                  result: dict, raw_text: str) -> int:
+    """写入合同主记录 (Phase 3A 新签名), 返回 contract_id。
+
+    result 来自 contract_extractor.extract_contract(), 包含:
+    contract_no, title, our_party, counterparty, signer,
+    start_date, end_date, total_amount, currency, direction,
+    payments, confidence, valid, warnings
+    """
     cur = conn.execute(
-        "INSERT INTO contracts (file_path, title, parties, raw_text, structured_json) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (file_path, title, parties, raw_text[:20000], json.dumps(structured, ensure_ascii=False)),
+        """INSERT INTO contracts
+           (file_path, title, parties, raw_text, structured_json,
+            contract_no, our_party, counterparty, signer,
+            start_date, end_date, total_amount, currency,
+            direction, status, extract_source, confidence, reviewed)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            file_path,
+            result.get("title", ""),
+            # parties 兼容旧列: 拼接双方
+            f"{result.get('our_party', '')} / {result.get('counterparty', '')}".strip(" /"),
+            raw_text[:20000],
+            json.dumps(result, ensure_ascii=False),
+            result.get("contract_no", ""),
+            result.get("our_party", ""),
+            result.get("counterparty", ""),
+            result.get("signer", ""),
+            result.get("start_date", ""),
+            result.get("end_date", ""),
+            result.get("total_amount"),
+            result.get("currency", "CNY"),
+            result.get("direction", "receivable"),
+            "active",
+            result.get("_method", "llm"),
+            result.get("confidence", 0.0),
+            0,  # reviewed = False
+        ),
     )
     return int(cur.lastrowid)
 
 
-def save_payments(conn: sqlite3.Connection, contract_id: int, payments: list[dict]) -> int:
-    """批量写入付款条目, 返回写入数量。"""
+def save_receivables(conn: sqlite3.Connection, contract_id: int,
+                     payments: list[dict]) -> int:
+    """批量写入应收条目 (receivables 表), 返回写入数量。"""
     rows = [
         (
             contract_id,
@@ -37,30 +70,76 @@ def save_payments(conn: sqlite3.Connection, contract_id: int, payments: list[dic
             p.get("currency", "CNY"),
             p.get("condition_text", ""),
             p.get("penalty", ""),
+            p.get("direction", "receivable"),
             p.get("status", "pending"),
             p.get("method", "regex"),
         )
         for p in payments
     ]
     conn.executemany(
-        "INSERT INTO payments "
-        "(contract_id, due_date, amount, currency, condition_text, penalty, status, source) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        """INSERT INTO receivables
+           (contract_id, due_date, amount, currency, condition_text,
+            penalty, direction, status, source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         rows,
     )
     conn.commit()
     return len(rows)
 
 
+def add_collection(conn: sqlite3.Connection, contract_id: int, amount: float,
+                   receivable_id: Optional[int] = None, currency: str = "CNY",
+                   method: str = "", note: str = "") -> int:
+    """登记一笔实收, 返回 collection_id。"""
+    cur = conn.execute(
+        """INSERT INTO collections
+           (collected_at, contract_id, receivable_id, amount, currency, method, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (date.today().isoformat(), contract_id, receivable_id,
+         amount, currency, method, note),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
 # ─── 查询 ────────────────────────────────────────────────────
-def list_payments(conn: sqlite3.Connection) -> list[dict]:
-    """列出所有付款条目 (含合同标题), 按到期日升序。"""
+def list_contracts(conn: sqlite3.Connection) -> list[dict]:
+    """列出所有合同, 附带应收合计/实收合计/未收余额。"""
     sql = """
-        SELECT p.id, c.title AS contract_title, c.file_path,
-               p.due_date, p.amount, p.currency, p.condition_text, p.status,
-               p.reminded_7d, p.reminded_3d, p.reminded_1d, p.source
-        FROM payments p LEFT JOIN contracts c ON p.contract_id = c.id
-        ORDER BY (p.due_date IS NULL), p.due_date ASC
+        SELECT c.*,
+               COALESCE(r_sum.total, 0)  AS receivable_sum,
+               COALESCE(col_sum.total, 0) AS collected_sum
+        FROM contracts c
+        LEFT JOIN (
+            SELECT contract_id, SUM(amount) AS total
+            FROM receivables GROUP BY contract_id
+        ) r_sum ON r_sum.contract_id = c.id
+        LEFT JOIN (
+            SELECT contract_id, SUM(amount) AS total
+            FROM collections GROUP BY contract_id
+        ) col_sum ON col_sum.contract_id = c.id
+        ORDER BY c.id DESC
+    """
+    rows = []
+    for r in conn.execute(sql).fetchall():
+        d = dict(r)
+        total = d.get("total_amount") or 0
+        recv = d.get("receivable_sum") or 0
+        base = max(total, recv)
+        d["outstanding"] = round(base - (d.get("collected_sum") or 0), 2)
+        rows.append(d)
+    return rows
+
+
+def list_receivables(conn: sqlite3.Connection) -> list[dict]:
+    """列出所有应收条目 (含合同标题), 按到期日升序。"""
+    sql = """
+        SELECT r.id, c.title AS contract_title, c.file_path, c.signer,
+               r.due_date, r.amount, r.currency, r.condition_text,
+               r.direction, r.status, r.source,
+               r.reminded_7d, r.reminded_3d, r.reminded_1d, r.reminded_overdue
+        FROM receivables r LEFT JOIN contracts c ON r.contract_id = c.id
+        ORDER BY (r.due_date IS NULL), r.due_date ASC
     """
     return [dict(r) for r in conn.execute(sql).fetchall()]
 
@@ -68,7 +147,7 @@ def list_payments(conn: sqlite3.Connection) -> list[dict]:
 # ─── 提醒 ────────────────────────────────────────────────────
 def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
                     do_notify: bool = True) -> list[dict]:
-    """扫描 pending 付款, 触发 7/3/1 天提醒。
+    """扫描 pending 应收, 触发 逾期/7/3/1 天四级提醒。
 
     Returns:
         触发的提醒列表 [{"id","title","due_date","days_left","level"}, ...]
@@ -76,7 +155,7 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
     today = today or date.today()
     fired: list[dict] = []
 
-    for row in list_payments(conn):
+    for row in list_receivables(conn):
         if row["status"] != "pending" or not row["due_date"]:
             continue
         try:
@@ -84,8 +163,6 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
         except ValueError:
             continue
         days_left = (due - today).days
-        if days_left < 0:
-            continue  # 已逾期不在本提醒范围 (可另行处理)
 
         level, flag_col = _level(days_left)
         if level is None:
@@ -94,11 +171,20 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
             continue  # 该级别已提醒过
 
         title = row["contract_title"] or Path(row["file_path"] or "").name or "合同"
-        msg = f"{title} · {row['amount']} {row['currency']} · {days_left}天后到期 ({row['due_date']})"
-        if do_notify:
-            notify(f"付款提醒 [{level}]", msg)
+        signer = row.get("signer") or ""
+        if days_left < 0:
+            msg = (f"{title} · {row['amount']} {row['currency']} · "
+                   f"已逾期 {-days_left} 天 (原定 {row['due_date']})")
+        else:
+            msg = (f"{title} · {row['amount']} {row['currency']} · "
+                   f"{days_left}天后到期 ({row['due_date']})")
+        if signer:
+            msg += f" · 签单人: {signer}"
 
-        conn.execute(f"UPDATE payments SET {flag_col}=1 WHERE id=?", (row["id"],))
+        if do_notify:
+            notify(f"回款提醒 [{level}]", msg)
+
+        conn.execute(f"UPDATE receivables SET {flag_col}=1 WHERE id=?", (row["id"],))
         fired.append({
             "id": row["id"], "title": title, "due_date": row["due_date"],
             "days_left": days_left, "level": level, "message": msg,
@@ -110,6 +196,8 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
 
 
 def _level(days_left: int) -> tuple[Optional[str], str]:
+    if days_left < 0:
+        return "逾期", "reminded_overdue"
     if days_left <= 1:
         return "1天", "reminded_1d"
     if days_left <= 3:
@@ -117,3 +205,36 @@ def _level(days_left: int) -> tuple[Optional[str], str]:
     if days_left <= 7:
         return "7天", "reminded_7d"
     return None, ""
+
+
+# ─── 错误日志 ────────────────────────────────────────────────
+def log_error(conn: sqlite3.Connection, stage: str, error_code: str,
+              message: str, file_path: str = "", field: str = "",
+              context: str = "", suggestion: str = "") -> int:
+    """写入结构化错误日志, 返回 error_id。"""
+    cur = conn.execute(
+        """INSERT INTO error_log
+           (stage, error_code, file_path, field, message, context, suggestion)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (stage, error_code, file_path, field, message, context[:2000], suggestion),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def list_errors(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    """按时间倒序列出最近错误。"""
+    sql = """SELECT * FROM error_log ORDER BY id DESC LIMIT ?"""
+    return [dict(r) for r in conn.execute(sql, (limit,)).fetchall()]
+
+
+# ─── 向后兼容别名 (Phase 2 调用方) ──────────────────────────
+def save_payments(conn: sqlite3.Connection, contract_id: int,
+                  payments: list[dict]) -> int:
+    """[兼容] 等价于 save_receivables。"""
+    return save_receivables(conn, contract_id, payments)
+
+
+def list_payments(conn: sqlite3.Connection) -> list[dict]:
+    """[兼容] 等价于 list_receivables。"""
+    return list_receivables(conn)

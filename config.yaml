@@ -8,6 +8,17 @@ server_port: 7860
 models_dir: "models"
 data_dir: "data"
 
+# 我方主体 (回款管理基础): 用于判断合同款项方向
+# 合同里出现该主体名称作为收款方时, 对应款项记为"应收/回款"; 反之记为"应付"
+company:
+  name: ""                    # 填入公司全称, 如 "苏州锐新视科技有限公司"
+  aliases: []                 # 简称/别名列表, 如 ["锐新视", "RXS"]
+
+# 合同汇总导出 (Excel/数据库落盘到指定文件夹, 供查询)
+export:
+  dir: "exports"              # 相对项目根或绝对路径
+  excel_summary: true         # 导出双 sheet 汇总 (合同主表 + 回款明细)
+
 # 模型下载源: huggingface | modelscope | local
 model_source: "huggingface"
 
@@ -28,16 +39,32 @@ ocr:
     confidence_threshold: 0.7
     fallback_engine: "paddleocr_vl"
 
-# LLM 配置
+# LLM 配置 (分级路由: 本地优先, 云端兜底)
 llm:
-  provider: "ollama"         # ollama | api
+  # 路由策略:
+  #   local_only                 - 仅本地, 失败则降级规则抽取
+  #   local_first_cloud_fallback - 本地优先, 能力不足时升级云端 (默认, 推荐)
+  #   cloud_first                - 云端优先 (本地仅兜底)
+  routing:
+    policy: "local_first_cloud_fallback"
+    confidence_threshold: 0.6      # 本地抽取置信度低于此值 → 升级云端
+    escalate_on_validation_fail: true  # 金额勾稽/JSON校验失败 → 升级云端
+
+  # 本地 Ollama (优先)
+  # 显存充足的机器: qwen3-vl:8b; 显存小的工厂电脑: 可换小文本模型, 如 qwen2.5:3b / qwen3:1.7b
+  # 注: 合同抽取走 OCR→文本→LLM, 纯文本模型即可胜任, 不必勉强跑视觉模型
   ollama:
     model: "qwen3-vl:8b"
     host: "http://localhost:11434"
+    timeout: 600
+
+  # 云端 API 兜底 (OpenAI 兼容协议, 默认 DeepSeek)
+  # 因为输入是 OCR 后的文本, 云端用纯文本大模型即可 (便宜且结构化抽取能力强)
   api:
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: "qwen-vl-max"
-    api_key: ""              # 填入 API Key 或设置环境变量 VISIONOCR_API_KEY
+    base_url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"          # deepseek-chat (V4 flash) / deepseek-reasoner (V4 pro)
+    api_key: ""                     # 填入 API Key 或设置环境变量 VISIONOCR_API_KEY
+    timeout: 120
 
 # 相机配置 (默认海康)
 camera:
