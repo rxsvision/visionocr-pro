@@ -1,6 +1,7 @@
 """VisionOCR Pro - 通用视觉识别与检测平台
 启动: python app.py → http://localhost:7860
 """
+import atexit
 import sys
 from pathlib import Path
 
@@ -10,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from core.config import load_config
 from core.database import init_db
+from core.scheduler import start_scheduler, stop_scheduler
 from engines.registry import EngineRegistry
 from ui.main import create_app, THEME, CSS
 
@@ -27,6 +29,10 @@ def main():
     set_settings_registry(registry)
     set_ocr_registry(registry)
     set_contract_registry(registry)
+
+    # 启动定时调度器 (提醒自动化)
+    start_scheduler(cfg)
+    atexit.register(stop_scheduler)
 
     app = create_app(cfg, registry)
     app.launch(

@@ -113,6 +113,46 @@ CREATE TABLE IF NOT EXISTS risk_alert (
     evidence TEXT                     -- 原文定位
 );
 
+-- 文件哈希 (重复检测)
+CREATE TABLE IF NOT EXISTS file_hashes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    sha256 TEXT UNIQUE,              -- 文件内容 SHA-256
+    file_path TEXT,                  -- 首次入库路径
+    file_name TEXT,                  -- 原始文件名
+    contract_id INTEGER,             -- 关联合同 (可空, 入库后回填)
+    file_size INTEGER                -- 字节数
+);
+
+-- 通知日志 (发送记录 + 重试追踪)
+CREATE TABLE IF NOT EXISTS notification_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    channel TEXT,                    -- feishu | wecom | desktop
+    recipient TEXT,                  -- 签单人名 / 默认联系人
+    message TEXT,
+    success INTEGER DEFAULT 0,      -- 0=失败/待重试, 1=成功
+    attempts INTEGER DEFAULT 1,     -- 已尝试次数
+    max_attempts INTEGER DEFAULT 3,
+    next_retry_at TEXT,             -- 下次重试时间 (ISO)
+    error TEXT,                     -- 最后一次错误信息
+    receivable_id INTEGER,          -- 关联应收条目 (可空)
+    contract_id INTEGER             -- 关联合同 (可空)
+);
+
+-- 审计追踪 (合同变更历史)
+CREATE TABLE IF NOT EXISTS contract_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    contract_id INTEGER,
+    action TEXT,                     -- create | update | review | reject | delete
+    operator TEXT DEFAULT 'system',  -- 操作者 (UI用户/系统/调度器)
+    field TEXT,                      -- 变更字段 (update时)
+    old_value TEXT,
+    new_value TEXT,
+    note TEXT                        -- 备注
+);
+
 -- 旧表保留 (兼容): payments / qc_results / behavior_events
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +214,9 @@ _MIGRATIONS = {
         ("extract_source", "ALTER TABLE contracts ADD COLUMN extract_source TEXT DEFAULT 'regex'"),
         ("confidence", "ALTER TABLE contracts ADD COLUMN confidence REAL DEFAULT 0.0"),
         ("reviewed", "ALTER TABLE contracts ADD COLUMN reviewed INTEGER DEFAULT 0"),
+        ("updated_by", "ALTER TABLE contracts ADD COLUMN updated_by TEXT DEFAULT ''"),
+        ("updated_at", "ALTER TABLE contracts ADD COLUMN updated_at TEXT DEFAULT ''"),
+        ("version", "ALTER TABLE contracts ADD COLUMN version INTEGER DEFAULT 1"),
     ],
     "payments": [
         ("source", "ALTER TABLE payments ADD COLUMN source TEXT DEFAULT 'regex'"),

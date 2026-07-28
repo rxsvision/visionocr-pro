@@ -17,6 +17,7 @@ import gradio as gr
 
 from core.config import load_config
 from core.database import get_conn
+from core.dedup import compute_sha256, check_duplicate, register_file
 from core.document_reader import read_document
 from core.contract_extractor import extract_contract
 from core.payment_store import (
@@ -126,6 +127,13 @@ def create_tab_contract(config: dict, registry):
                     wrap=True,
                 )
                 review_refresh_btn = gr.Button("刷新待复核")
+                gr.Markdown("---")
+                batch_threshold = gr.Slider(
+                    0.5, 1.0, value=0.85, step=0.05,
+                    label="批量通过阈值 (置信度 ≥ 此值自动通过)")
+                batch_approve_btn = gr.Button(
+                    "批量通过 (高置信度)", variant="secondary")
+                batch_msg = gr.Markdown("")
             with gr.Column(scale=2):
                 review_id_input = gr.Number(label="选择合同 ID", precision=0)
                 load_detail_btn = gr.Button("加载详情")
@@ -256,6 +264,10 @@ def create_tab_contract(config: dict, registry):
         fn=_reject_review, inputs=[review_id_input],
         outputs=[review_msg, review_list],
     )
+    batch_approve_btn.click(
+        fn=_batch_approve, inputs=[batch_threshold],
+        outputs=[batch_msg, review_list],
+    )
 
     # 错误
     err_search_btn.click(
@@ -297,10 +309,12 @@ def create_tab_contract(config: dict, registry):
     )
 
 
-# ─── 提取回调 ────────────────────────────────────────────────
-def _extract_contracts(files) -> tuple[list[list], str]:
+# ─── 提取回调 (流式进度) ─────────────────────────────────────
+def _extract_contracts(files):
+    """Generator: 逐文件处理并 yield 进度, Gradio 自动流式渲染。"""
     if not files:
-        return [], "请先上传合同文件。"
+        yield [], "请先上传合同文件。"
+        return
 
     registry = _registry
     cfg = _get_config()
@@ -312,10 +326,12 @@ def _extract_contracts(files) -> tuple[list[list], str]:
     total_items = 0
     ok_count = 0
     fail_count = 0
+    dup_count = 0
     tiers_used: dict[str, int] = {}
+    total_files = len(files)
 
     try:
-        for f in files:
+        for idx, f in enumerate(files, 1):
             path = f.name if hasattr(f, "name") else str(f)
             name = os.path.basename(path)
             try:
@@ -324,6 +340,24 @@ def _extract_contracts(files) -> tuple[list[list], str]:
                     fail_count += 1
                     log_error(conn, "read", "FILE_NOT_FOUND",
                               f"文件不存在: {path}", file_path=path)
+                    yield _refresh_table(), _progress_summary(
+                        idx, total_files, ok_count, dup_count, fail_count,
+                        total_items, tiers_used, statuses)
+                    continue
+
+                # 重复检测: SHA-256 内容哈希
+                sha = compute_sha256(path)
+                existing = check_duplicate(conn, sha)
+                if existing:
+                    dup_count += 1
+                    prev = existing.get("file_name") or existing.get("file_path", "")
+                    statuses.append(
+                        f"⚠ 跳过(重复): {name} — 与已入库文件相同 ({prev}, "
+                        f"入库于 {existing.get('created_at', '?')})"
+                    )
+                    yield _refresh_table(), _progress_summary(
+                        idx, total_files, ok_count, dup_count, fail_count,
+                        total_items, tiers_used, statuses)
                     continue
 
                 doc = read_document(path, registry)
@@ -332,6 +366,9 @@ def _extract_contracts(files) -> tuple[list[list], str]:
                     fail_count += 1
                     log_error(conn, "ocr", "DOC_READ_FAIL",
                               doc["error"], file_path=path)
+                    yield _refresh_table(), _progress_summary(
+                        idx, total_files, ok_count, dup_count, fail_count,
+                        total_items, tiers_used, statuses)
                     continue
                 text = doc.get("text", "")
                 if not text.strip():
@@ -339,6 +376,9 @@ def _extract_contracts(files) -> tuple[list[list], str]:
                     fail_count += 1
                     log_error(conn, "ocr", "EMPTY_TEXT",
                               "OCR/文本提取结果为空", file_path=path)
+                    yield _refresh_table(), _progress_summary(
+                        idx, total_files, ok_count, dup_count, fail_count,
+                        total_items, tiers_used, statuses)
                     continue
 
                 result, tier = _routed_extract(registry, cfg, text, company)
@@ -348,6 +388,10 @@ def _extract_contracts(files) -> tuple[list[list], str]:
                 n = save_receivables(conn, cid, result.get("payments", []))
                 total_items += n
                 ok_count += 1
+
+                # 注册文件哈希 (重复检测)
+                register_file(conn, sha, path, file_name=name,
+                              file_size=os.path.getsize(path), contract_id=cid)
 
                 # 风险扫描
                 alerts = scan_risks(result, text)
@@ -371,15 +415,26 @@ def _extract_contracts(files) -> tuple[list[list], str]:
                 fail_count += 1
                 statuses.append(f"✗ {name}: 处理异常 - {e}")
                 log_error(conn, "extract", "EXCEPTION", str(e), file_path=path)
+
+            # 每处理完一个文件 yield 一次进度
+            yield _refresh_table(), _progress_summary(
+                idx, total_files, ok_count, dup_count, fail_count,
+                total_items, tiers_used, statuses)
     finally:
         conn.close()
 
-    tier_summary = ", ".join(f"{k}:{v}" for k, v in tiers_used.items()) or "无"
-    summary = (
-        f"**路由: {tier_summary}** · 共 {len(files)} 份, 成功 {ok_count}, "
-        f"失败 {fail_count}, 入库 {total_items} 条应收\n\n" + "\n".join(statuses)
+
+def _progress_summary(idx: int, total: int, ok: int, dup: int, fail: int,
+                      items: int, tiers: dict, statuses: list[str]) -> str:
+    """生成带进度条的状态摘要。"""
+    pct = int(idx / total * 100) if total else 100
+    bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+    tier_summary = ", ".join(f"{k}:{v}" for k, v in tiers.items()) or "..."
+    header = (
+        f"**[{bar}] {idx}/{total} ({pct}%)** · 路由: {tier_summary}\n\n"
+        f"成功 {ok} · 重复跳过 {dup} · 失败 {fail} · 入库 {items} 条应收\n\n"
     )
-    return _refresh_table(), summary
+    return header + "\n".join(statuses)
 
 
 def _routed_extract(registry, cfg: dict, text: str, company: dict) -> tuple[dict, str]:
@@ -497,6 +552,25 @@ def _reject_review(contract_id) -> tuple[str, list[list]]:
     reject_contract(conn, int(contract_id), reason="人工复核驳回")
     conn.close()
     return f"✗ 合同 #{int(contract_id)} 已驳回 (标记为 terminated)。", _refresh_review_list()
+
+
+def _batch_approve(threshold: float) -> tuple[str, list[list]]:
+    """批量通过: 将所有置信度 >= threshold 的待复核合同标记为已复核。"""
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    rows = list_pending_review(conn)
+    approved = []
+    for r in rows:
+        if (r.get("confidence") or 0) >= threshold:
+            mark_reviewed(conn, r["id"])
+            title = r.get("title") or os.path.basename(r.get("file_path") or "")
+            approved.append(f"#{r['id']} {title} ({r.get('confidence', 0):.0%})")
+    conn.close()
+    if approved:
+        msg = f"✓ 批量通过 {len(approved)} 份合同 (阈值 {threshold:.0%}):\n\n" + "\n".join(approved)
+    else:
+        msg = f"无符合条件的合同 (阈值 {threshold:.0%}, 待复核 {len(rows)} 份均低于阈值)。"
+    return msg, _refresh_review_list()
 
 
 # ─── 错误定位回调 ────────────────────────────────────────────

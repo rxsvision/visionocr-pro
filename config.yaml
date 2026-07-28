@@ -47,6 +47,14 @@ notify:
     feishu_id: ""
     wecom_id: ""
 
+# 定时调度器 (回款提醒自动化)
+# 双保险: 应用内 APScheduler + Windows 计划任务 (应用关闭后兜底)
+scheduler:
+  enabled: true
+  reminder_time: "09:00"     # 每日提醒扫描时间 (HH:MM, 24小时制)
+  catch_up: true             # 启动时补跑: 若上次运行距今 >24h, 立即执行一次
+  status_file: "data/scheduler_state.json"
+
 # 模型下载源: huggingface | modelscope | local
 model_source: "huggingface"
 

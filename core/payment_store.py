@@ -250,7 +250,8 @@ def _send_reminder(conn: sqlite3.Connection, config: Optional[dict],
             message = f"[默认联系人] {message}"
 
     results = notify_signer(config, target_name or "未指定", message,
-                            feishu_id=feishu_id, wecom_id=wecom_id)
+                            feishu_id=feishu_id, wecom_id=wecom_id,
+                            conn=conn)
     return any(results.values())
 
 
@@ -329,19 +330,33 @@ def get_contract_detail(conn: sqlite3.Connection, contract_id: int) -> Optional[
 
 
 def update_contract_fields(conn: sqlite3.Connection, contract_id: int,
-                           fields: dict) -> None:
-    """人工修正合同字段 (仅允许白名单列)。"""
+                           fields: dict, operator: str = "ui_user") -> None:
+    """人工修正合同字段 (仅允许白名单列), 带审计日志。"""
     allowed = {"contract_no", "title", "our_party", "counterparty", "signer",
                "start_date", "end_date", "total_amount", "currency", "direction"}
+    # 获取旧值用于审计
+    old_row = conn.execute(
+        "SELECT * FROM contracts WHERE id = ?", (contract_id,)
+    ).fetchone()
+    if not old_row:
+        return
+    old_dict = dict(old_row)
+
     sets, params = [], []
     for k, v in fields.items():
         if k in allowed:
             sets.append(f"{k} = ?")
             params.append(v)
+            # 审计: 记录每个字段变更
+            old_val = old_dict.get(k, "")
+            if str(old_val) != str(v):
+                log_audit(conn, contract_id, "update", operator,
+                          field=k, old_value=str(old_val), new_value=str(v))
     if not sets:
         return
     params.append(contract_id)
     conn.execute(f"UPDATE contracts SET {', '.join(sets)} WHERE id = ?", params)
+    _touch_contract(conn, contract_id, operator)
     conn.commit()
 
 
@@ -362,19 +377,24 @@ def update_receivable_fields(conn: sqlite3.Connection, receivable_id: int,
     conn.commit()
 
 
-def mark_reviewed(conn: sqlite3.Connection, contract_id: int) -> None:
+def mark_reviewed(conn: sqlite3.Connection, contract_id: int,
+                  operator: str = "ui_user") -> None:
     """确认复核通过, 合同正式进入回款日程。"""
     conn.execute("UPDATE contracts SET reviewed = 1 WHERE id = ?", (contract_id,))
+    _touch_contract(conn, contract_id, operator)
+    log_audit(conn, contract_id, "review", operator, note="复核通过, 进入回款日程")
     conn.commit()
 
 
 def reject_contract(conn: sqlite3.Connection, contract_id: int,
-                    reason: str = "") -> None:
+                    reason: str = "", operator: str = "ui_user") -> None:
     """驳回合同 (标记为 terminated + 记录原因)。"""
     conn.execute(
         "UPDATE contracts SET reviewed = 1, status = 'terminated' WHERE id = ?",
         (contract_id,),
     )
+    _touch_contract(conn, contract_id, operator)
+    log_audit(conn, contract_id, "reject", operator, note=reason or "人工复核驳回")
     if reason:
         log_error(conn, "review", "REJECTED", reason,
                   file_path=_get_file_path(conn, contract_id))
@@ -386,6 +406,45 @@ def _get_file_path(conn: sqlite3.Connection, contract_id: int) -> str:
         "SELECT file_path FROM contracts WHERE id = ?", (contract_id,)
     ).fetchone()
     return row[0] if row else ""
+
+
+# ─── 审计追踪 ────────────────────────────────────────────────
+def log_audit(conn: sqlite3.Connection, contract_id: int, action: str,
+              operator: str = "ui_user", field: str = "",
+              old_value: str = "", new_value: str = "", note: str = "") -> int:
+    """写入审计日志, 返回 audit_id。"""
+    cur = conn.execute(
+        """INSERT INTO contract_audit
+           (contract_id, action, operator, field, old_value, new_value, note)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (contract_id, action, operator, field,
+         str(old_value)[:500], str(new_value)[:500], note[:300]),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def get_audit_trail(conn: sqlite3.Connection,
+                    contract_id: int) -> list[dict]:
+    """获取合同的完整变更历史。"""
+    rows = conn.execute(
+        """SELECT * FROM contract_audit WHERE contract_id = ?
+           ORDER BY id ASC""",
+        (contract_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _touch_contract(conn: sqlite3.Connection, contract_id: int,
+                    operator: str = "ui_user") -> None:
+    """更新 updated_by/updated_at/version (乐观锁递增)。"""
+    conn.execute(
+        """UPDATE contracts
+           SET updated_by = ?, updated_at = datetime('now','localtime'),
+               version = COALESCE(version, 1) + 1
+           WHERE id = ?""",
+        (operator, contract_id),
+    )
 
 
 # ─── 签单人映射 ──────────────────────────────────────────────
