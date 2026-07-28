@@ -1,0 +1,72 @@
+# VisionOCR Pro 配置文件
+# 修改后重启生效
+
+server_name: "127.0.0.1"
+server_port: 7860
+
+# 模型权重目录 (相对项目根或绝对路径)
+models_dir: "models"
+data_dir: "data"
+
+# 模型下载源: huggingface | modelscope | local
+model_source: "huggingface"
+
+# 设备: cuda | cpu | auto
+device: "auto"
+
+# 显存管理
+vram:
+  max_budget_gb: 12          # RTX 4070 Ti
+  idle_unload_sec: 300       # 空闲 5min 自动卸载
+  quantization: "q4"         # VLM 量化: q4 | q5 | q8 | fp16
+
+# OCR 引擎配置
+ocr:
+  default_engine: "auto"     # auto | ovisocr2 | paddleocr_vl | hunyuan | rapidocr
+  scene_classifier:
+    enabled: true
+    confidence_threshold: 0.7
+    fallback_engine: "paddleocr_vl"
+
+# LLM 配置
+llm:
+  provider: "ollama"         # ollama | api
+  ollama:
+    model: "qwen3-vl:8b"
+    host: "http://localhost:11434"
+  api:
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: "qwen-vl-max"
+    api_key: ""              # 填入 API Key 或设置环境变量 VISIONOCR_API_KEY
+
+# 相机配置 (默认海康)
+camera:
+  type: "hikvision"          # opencv | gigevision | hikvision
+  index: 0
+  gigE_ip: "192.168.1.100"
+  trigger: "software"        # software | hardware
+  exposure_us: 5000
+  hik_sdk_path: "C:\\Program Files (x86)\\MVS\\Development\\Bin\\Win64_x64"
+
+# 默认激活场景 (UI 启动时优先展示)
+default_scenes:
+  - "contract"               # 合同自动化 (P0)
+  - "qc"                    # 工业质检 (P0)
+
+# 条码识别
+barcode:
+  engine: "zbar"             # dynamsoft | zbar
+  dynamsoft_license: ""
+
+# 质检
+qc:
+  anomaly_algorithm: "dinomaly"   # dinomaly | patchcore | visualad
+  confidence_threshold: 0.5
+  auto_ng_alert: true
+
+# 行为分析 (P2 可选)
+behavior:
+  enabled: false
+  pose_model: "rtmpose-m"
+  fatigue_threshold: 0.7
+  sop_sequence: []
