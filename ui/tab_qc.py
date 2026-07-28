@@ -55,9 +55,9 @@ def create_tab_qc(config: dict, registry):
                 value="(自定义)",
             )
             prompt_input = gr.Textbox(
-                label="缺陷提示词 (英文, 点号分隔)",
+                label="缺陷提示词 (中文或英文, 点号分隔)",
                 value=DEFAULT_PROMPT,
-                placeholder="scratch.dent.crack.stain.burr.missing part",
+                placeholder="划痕.凹陷.裂纹.污渍.毛刺.色差 (自动翻译为英文)",
                 lines=2,
             )
             threshold_slider = gr.Slider(

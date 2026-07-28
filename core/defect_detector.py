@@ -6,6 +6,7 @@
 - OK/NG 判定 (有缺陷 → NG, 无缺陷 → OK)
 - 产品配方管理 (每个产品保存缺陷描述词, 一键切换)
 - 检测结果落库 (qc_results 表)
+- 中文提示词自动翻译为英文 (Grounding DINO 仅支持英文 BERT)
 """
 from __future__ import annotations
 
@@ -19,11 +20,55 @@ import numpy as np
 
 logger = logging.getLogger("visionocr.defect")
 
-# 默认缺陷提示词 (通用工业外观)
-DEFAULT_PROMPT = "scratch.dent.crack.stain.burr.color difference.missing part.deformation"
+# ─── 中英缺陷词对照表 (工业外观常见) ─────────────────────────
+_ZH_EN_MAP = {
+    "划痕": "scratch", "刮伤": "scratch", "划伤": "scratch",
+    "凹陷": "dent", "凹坑": "dent", "压痕": "dent",
+    "裂纹": "crack", "裂缝": "crack", "开裂": "crack",
+    "污渍": "stain", "脏污": "stain", "污点": "stain",
+    "毛刺": "burr", "飞边": "burr",
+    "色差": "color difference", "变色": "discoloration",
+    "缺件": "missing part", "缺失": "missing", "漏装": "missing component",
+    "变形": "deformation", "翘曲": "warp", "弯曲": "bend",
+    "气泡": "bubble", "气孔": "porosity", "砂眼": "blowhole",
+    "锈": "rust", "锈蚀": "rust", "氧化": "oxidation",
+    "磨损": "wear", "磨伤": "abrasion",
+    "异物": "foreign object", "杂质": "impurity",
+    "错位": "misalignment", "偏移": "offset", "倾斜": "tilt",
+    "破损": "damage", "断裂": "fracture", "缺口": "notch",
+    "溢胶": "glue overflow", "胶渍": "glue residue",
+    "焊渣": "solder spatter", "虚焊": "cold solder joint",
+    "短路": "short circuit", "断路": "open circuit",
+    "标签歪": "misaligned label", "贴歪": "crooked label",
+    "印刷不良": "print defect", "漏印": "missing print",
+    "缩水": "shrinkage", "飞料": "flash",
+    "缺陷": "defect", "不良": "defect", "异常": "anomaly",
+}
+
+# 默认提示词 (中文界面, 内部自动翻译为英文)
+DEFAULT_PROMPT = "划痕.凹陷.裂纹.污渍.毛刺.色差.缺件.变形"
 
 # 产品配方存储路径
 _RECIPES_DIR = Path("data/recipes")
+
+
+def translate_prompt(prompt: str) -> str:
+    """将中文缺陷提示词翻译为英文 (点号分隔)。
+
+    规则:
+    - 逐词查表, 命中则替换为英文
+    - 未命中且含中文 → 保留原文 (模型可能部分识别)
+    - 已是英文 → 原样保留
+    """
+    terms = [t.strip() for t in prompt.replace("。", ".").split(".") if t.strip()]
+    translated = []
+    for term in terms:
+        en = _ZH_EN_MAP.get(term)
+        if en:
+            translated.append(en)
+        else:
+            translated.append(term)
+    return ".".join(translated)
 
 
 # ─── 产品配方 ────────────────────────────────────────────────
@@ -104,10 +149,11 @@ def run_detection(registry, image_path: str, prompt: str = "",
         return {"image": None, "verdict": "ERROR", "detections": [],
                 "count": 0, "max_score": 0, "error": "模型加载失败"}
 
-    # 推理
+    # 推理 (中文提示词自动翻译为英文)
     if not prompt.strip():
         prompt = DEFAULT_PROMPT
-    result = engine.infer(image_path, prompt=prompt, threshold=threshold)
+    en_prompt = translate_prompt(prompt)
+    result = engine.infer(image_path, prompt=en_prompt, threshold=threshold)
 
     if result.get("error"):
         return {"image": img, "verdict": "ERROR", "detections": [],
