@@ -120,8 +120,8 @@ def notify_signer(config: dict, signer_name: str, message: str,
         mentions = [wecom_id] if wecom_id else None
         results["wecom"] = send_wecom(wecom_url, message, mentions)
 
-    # 桌面通知兜底 (IM 全未配置或全失败时)
-    if not any(results.values()):
+    # 桌面通知兜底 (IM 全未配置或全失败时, 受 desktop_fallback 配置控制)
+    if not any(results.values()) and ncfg.get("desktop_fallback", True):
         try:
             from core.notifications import notify
             notify(f"回款提醒 · {signer_name}", message)

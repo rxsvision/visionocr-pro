@@ -199,12 +199,17 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
             msg += f" · 签单人: {signer}"
 
         if do_notify:
-            _send_reminder(conn, config, signer, f"[{level}] {msg}")
+            delivered = _send_reminder(conn, config, signer, f"[{level}] {msg}")
+        else:
+            delivered = True  # 不发送时视为已处理
 
-        conn.execute(f"UPDATE receivables SET {flag_col}=1 WHERE id=?", (row["id"],))
+        # C5 修复: 仅在实际送达时才标记已提醒, 避免网络抖动导致提醒永久丢失
+        if delivered:
+            conn.execute(f"UPDATE receivables SET {flag_col}=1 WHERE id=?", (row["id"],))
         fired.append({
             "id": row["id"], "title": title, "due_date": row["due_date"],
             "days_left": days_left, "level": level, "message": msg,
+            "delivered": delivered,
         })
 
     if fired:
@@ -213,14 +218,14 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
 
 
 def _send_reminder(conn: sqlite3.Connection, config: Optional[dict],
-                   signer: str, message: str) -> None:
-    """发送提醒: 有 config 时走 IM (飞书/企微), 否则桌面通知。
+                   signer: str, message: str) -> bool:
+    """发送提醒, 返回是否至少一个渠道送达 (C5 修复)。
 
     业务规则: 签单人缺失或映射表查不到 → 降级通知老板指定的默认联系人。
     """
     if not config:
         notify("回款提醒", message)
-        return
+        return True  # 桌面通知视为送达
 
     from core.notifier import notify_signer
     ncfg = config.get("notify", {}) or {}
@@ -244,8 +249,9 @@ def _send_reminder(conn: sqlite3.Connection, config: Optional[dict],
             wecom_id = dc.get("wecom_id", "")
             message = f"[默认联系人] {message}"
 
-    notify_signer(config, target_name or "未指定", message,
-                  feishu_id=feishu_id, wecom_id=wecom_id)
+    results = notify_signer(config, target_name or "未指定", message,
+                            feishu_id=feishu_id, wecom_id=wecom_id)
+    return any(results.values())
 
 
 def _level(days_left: int) -> tuple[Optional[str], str]:
@@ -425,21 +431,6 @@ def outstanding_by_signer(conn: sqlite3.Connection) -> list[dict]:
         [{"signer", "contract_count", "total_receivable",
           "total_collected", "total_outstanding"}, ...]
     """
-    sql = """
-        SELECT c.signer,
-               COUNT(DISTINCT c.id) AS contract_count,
-               COALESCE(SUM(r.amount), 0) AS total_receivable,
-               COALESCE((SELECT SUM(col.amount) FROM collections col
-                         WHERE col.contract_id IN
-                           (SELECT id FROM contracts WHERE signer = c.signer)), 0)
-                 AS total_collected
-        FROM contracts c
-        LEFT JOIN receivables r ON r.contract_id = c.id
-        WHERE c.reviewed = 1 AND c.status = 'active' AND c.signer != ''
-        GROUP BY c.signer
-        ORDER BY total_outstanding DESC
-    """
-    # SQLite 不支持在 ORDER BY 引用别名内的表达式, 用子查询
     sql = """
         SELECT signer, contract_count, total_receivable, total_collected,
                (total_receivable - total_collected) AS total_outstanding

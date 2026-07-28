@@ -148,6 +148,14 @@ CREATE TABLE IF NOT EXISTS behavior_events (
     confidence REAL,
     detail_json TEXT
 );
+
+-- 性能索引 (Phase 3F 审查后补充)
+CREATE INDEX IF NOT EXISTS idx_receivables_contract ON receivables(contract_id);
+CREATE INDEX IF NOT EXISTS idx_receivables_status ON receivables(status);
+CREATE INDEX IF NOT EXISTS idx_collections_contract ON collections(contract_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_signer ON contracts(signer);
+CREATE INDEX IF NOT EXISTS idx_contracts_reviewed ON contracts(reviewed);
+CREATE INDEX IF NOT EXISTS idx_risk_alert_contract ON risk_alert(contract_id);
 """
 
 # 平滑迁移: 为旧库已有表补齐新增列 (table -> [(column, ddl)])
@@ -195,12 +203,25 @@ def init_db(data_dir: str) -> Path:
     return db_path
 
 
+# 已初始化的 db 路径缓存 (避免每次 get_conn 重复执行 DDL)
+_initialized_dbs: set[str] = set()
+
+
 def get_conn(data_dir: str) -> sqlite3.Connection:
     data_path = Path(data_dir)
     data_path.mkdir(parents=True, exist_ok=True)
     db_path = data_path / "visionocr.db"
-    conn = sqlite3.connect(str(db_path))
+    db_str = str(db_path)
+
+    is_new = not db_path.exists() or db_str not in _initialized_dbs
+    conn = sqlite3.connect(db_str, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.executescript(_SCHEMA)
-    _migrate(conn)
+    # M6 修复: WAL 模式 + busy_timeout, 减少并发锁冲突
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+
+    if is_new:
+        conn.executescript(_SCHEMA)
+        _migrate(conn)
+        _initialized_dbs.add(db_str)
     return conn

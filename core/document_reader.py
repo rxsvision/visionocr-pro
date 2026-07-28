@@ -38,31 +38,53 @@ def _read_pdf(file_path: str, registry, ocr_engine: str) -> dict:
         return {"text": "", "pages": 0, "source": "error", "images": [],
                 "error": "缺少 PyMuPDF, 请 `pip install pymupdf`"}
 
-    doc = fitz.open(file_path)
-    pages_text: list[str] = []
-    rendered: list[str] = []
-    tmpdir = tempfile.mkdtemp(prefix="visionocr_pdf_")
+    tmpdir = None
+    try:
+        doc = fitz.open(file_path)
+    except Exception as e:  # noqa: BLE001
+        # 加密/损坏/零字节 PDF → 结构化错误, 不中断批量流程 (C2 修复)
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": f"PDF 打开失败: {e}"}
 
-    for i, page in enumerate(doc):
-        txt = page.get_text("text") or ""
-        if len(txt.strip()) >= _MIN_TEXT_CHARS:
-            pages_text.append(txt)
-            continue
-        # 扫描件: 渲染为 200dpi 图片后 OCR
-        pix = page.get_pixmap(dpi=200)
-        img_path = os.path.join(tmpdir, f"page_{i:03d}.png")
-        pix.save(img_path)
-        rendered.append(img_path)
-        pages_text.append(_ocr_image(img_path, registry, ocr_engine))
+    try:
+        pages_text: list[str] = []
+        rendered: list[str] = []
+        need_ocr = False
 
-    doc.close()
-    source = "ocr" if rendered else "text"
-    return {
-        "text": "\n\n".join(t for t in pages_text if t.strip()),
-        "pages": len(pages_text),
-        "source": source,
-        "images": rendered,
-    }
+        for i, page in enumerate(doc):
+            txt = page.get_text("text") or ""
+            if len(txt.strip()) >= _MIN_TEXT_CHARS:
+                pages_text.append(txt)
+                continue
+            # 扫描件: 渲染为 200dpi 图片后 OCR
+            need_ocr = True
+            if tmpdir is None:
+                tmpdir = tempfile.mkdtemp(prefix="visionocr_pdf_")
+            pix = page.get_pixmap(dpi=200)
+            img_path = os.path.join(tmpdir, f"page_{i:03d}.png")
+            pix.save(img_path)
+            rendered.append(img_path)
+            pages_text.append(_ocr_image(img_path, registry, ocr_engine))
+
+        source = "ocr" if need_ocr else "text"
+        return {
+            "text": "\n\n".join(t for t in pages_text if t.strip()),
+            "pages": len(pages_text),
+            "source": source,
+            "images": rendered,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"text": "", "pages": 0, "source": "error", "images": [],
+                "error": f"PDF 处理异常: {e}"}
+    finally:
+        doc.close()
+        # C3 修复: 清理临时渲染图片 (OCR 已完成, 不再需要)
+        if tmpdir:
+            import shutil
+            try:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ─── 图片 OCR ────────────────────────────────────────────────

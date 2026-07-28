@@ -401,7 +401,14 @@ def _regex_extract(text: str, base_date: date) -> dict:
         else:
             m_rel = _REL_DATE_RE.search(seg)
             if m_rel:
-                due = (base_date + timedelta(days=int(m_rel.group(2)))).isoformat()
+                anchor = m_rel.group(1) or ""
+                # H2 修复: 仅当锚点可解析为 base_date 时才计算绝对日期
+                # 签订/签署/生效 ≈ 合同签署日 (base_date 近似)
+                # 验收/交付/开票/到货/质保期满 → 未来事件, 日期未知, 留空
+                _RESOLVABLE_ANCHORS = ("签订", "签署", "生效")
+                if anchor in _RESOLVABLE_ANCHORS:
+                    due = (base_date + timedelta(days=int(m_rel.group(2)))).isoformat()
+                # else: due 留空, 相对描述保留在 condition_text 中
         cond = _ORDINAL_RE.sub("", seg)[:120]
         payments.append({
             "due_date": due, "amount": amt, "currency": "CNY",

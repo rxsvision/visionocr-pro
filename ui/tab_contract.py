@@ -453,6 +453,16 @@ def _confirm_review(contract_id, title, signer, our_party, counterparty,
                     total, direction, start_date, end_date) -> tuple[str, list[list]]:
     if not contract_id:
         return "请先选择合同 ID。", _refresh_review_list()
+    # H7 修复: 日期格式校验
+    import re as _re
+    _DATE_FMT = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    for label, val in [("起始日期", start_date), ("终止日期", end_date)]:
+        if val and not _DATE_FMT.match(str(val)):
+            return f"⚠ {label}格式无效 (需 YYYY-MM-DD): {val}", _refresh_review_list()
+    # H7 修复: 金额校验
+    if total is not None and total < 0:
+        return "⚠ 合同总额不能为负数。", _refresh_review_list()
+
     cfg = _get_config()
     conn = get_conn(cfg.get("data_dir", "data"))
     fields = {}
