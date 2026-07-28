@@ -26,9 +26,11 @@ def main():
     from ui.tab_settings import set_registry as set_settings_registry
     from ui.tab_ocr import set_registry as set_ocr_registry
     from ui.tab_contract import set_registry as set_contract_registry
+    from ui.tab_qc import set_registry as set_qc_registry
     set_settings_registry(registry)
     set_ocr_registry(registry)
     set_contract_registry(registry)
+    set_qc_registry(registry)
 
     # 启动定时调度器 (提醒自动化)
     start_scheduler(cfg)

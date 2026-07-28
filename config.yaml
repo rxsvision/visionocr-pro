@@ -124,6 +124,7 @@ barcode:
 # 质检
 qc:
   anomaly_algorithm: "dinomaly"   # dinomaly | patchcore | visualad
+  grounding_dino_model: "base"    # tiny (快, 1.2GB) | base (精, 2.5GB)
   confidence_threshold: 0.5
   auto_ng_alert: true
 
