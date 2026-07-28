@@ -24,6 +24,7 @@ from core.payment_store import (
     list_pending_review, get_contract_detail,
     update_contract_fields, update_receivable_fields,
     mark_reviewed, reject_contract,
+    upsert_signer, list_signers, delete_signer, outstanding_by_signer,
 )
 from engines.llm.router import route_extract, get_llm
 
@@ -139,6 +140,34 @@ def create_tab_contract(config: dict, registry):
             wrap=True,
         )
 
+    # ─── 签单人映射管理 ──────────────────────────────────────
+    with gr.Accordion("签单人映射 (人名 → 飞书/企微账号)", open=False):
+        signer_table = gr.Dataframe(
+            headers=["姓名", "飞书ID", "企微ID", "手机", "备注"],
+            label="签单人列表",
+            wrap=True,
+        )
+        with gr.Row():
+            s_name = gr.Textbox(label="姓名 (合同中的)", scale=2)
+            s_feishu = gr.Textbox(label="飞书 open_id", scale=2)
+            s_wecom = gr.Textbox(label="企微 userid", scale=2)
+        with gr.Row():
+            s_phone = gr.Textbox(label="手机号", scale=1)
+            s_note = gr.Textbox(label="备注", scale=2)
+            s_save_btn = gr.Button("保存/更新", variant="primary")
+            s_del_btn = gr.Button("删除")
+        signer_refresh_btn = gr.Button("刷新列表")
+        signer_msg = gr.Markdown("")
+
+    # ─── 回款日程 (按签单人聚合) ─────────────────────────────
+    with gr.Accordion("回款日程 · 按签单人汇总未收", open=False):
+        schedule_table = gr.Dataframe(
+            headers=["签单人", "合同数", "应收总额", "已收总额", "未收余额"],
+            label="未收回款汇总",
+            wrap=True,
+        )
+        schedule_refresh_btn = gr.Button("刷新汇总")
+
     # ─── 事件绑定 ────────────────────────────────────────────
     extract_btn.click(
         fn=_extract_contracts, inputs=[file_upload],
@@ -173,6 +202,20 @@ def create_tab_contract(config: dict, registry):
         fn=_search_errors, inputs=[err_stage, err_code, err_file],
         outputs=[error_table],
     )
+
+    # 签单人映射
+    s_save_btn.click(
+        fn=_save_signer, inputs=[s_name, s_feishu, s_wecom, s_phone, s_note],
+        outputs=[signer_msg, signer_table],
+    )
+    s_del_btn.click(
+        fn=_delete_signer, inputs=[s_name],
+        outputs=[signer_msg, signer_table],
+    )
+    signer_refresh_btn.click(fn=_refresh_signers, outputs=[signer_table])
+
+    # 回款日程
+    schedule_refresh_btn.click(fn=_refresh_schedule, outputs=[schedule_table])
 
 
 # ─── 提取回调 ────────────────────────────────────────────────
@@ -438,7 +481,7 @@ def _refresh_contracts() -> list[list]:
 def _check_reminders() -> str:
     cfg = _get_config()
     conn = get_conn(cfg.get("data_dir", "data"))
-    fired = check_reminders(conn, today=date.today(), do_notify=True)
+    fired = check_reminders(conn, today=date.today(), do_notify=True, config=cfg)
     conn.close()
     if not fired:
         return f"[{date.today().isoformat()}] 暂无逾期或 7 天内到期的应收 (仅已复核合同), 或已全部提醒。"
@@ -498,3 +541,51 @@ def _export_excel() -> str:
         return f"已导出: {out_path}"
     except Exception as e:  # noqa: BLE001
         return f"导出失败: {e}"
+
+
+# ─── 签单人映射回调 ──────────────────────────────────────────
+def _save_signer(name, feishu, wecom, phone, note) -> tuple[str, list[list]]:
+    if not name or not name.strip():
+        return "请填写签单人姓名。", _refresh_signers()
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    upsert_signer(conn, name.strip(), feishu_id=feishu or "",
+                  wecom_id=wecom or "", phone=phone or "", note=note or "")
+    conn.close()
+    return f"✓ 已保存: {name.strip()}", _refresh_signers()
+
+
+def _delete_signer(name) -> tuple[str, list[list]]:
+    if not name or not name.strip():
+        return "请填写要删除的签单人姓名。", _refresh_signers()
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    delete_signer(conn, name.strip())
+    conn.close()
+    return f"已删除: {name.strip()}", _refresh_signers()
+
+
+def _refresh_signers() -> list[list]:
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    rows = list_signers(conn)
+    conn.close()
+    return [
+        [r.get("name") or "", r.get("feishu_id") or "",
+         r.get("wecom_id") or "", r.get("phone") or "", r.get("note") or ""]
+        for r in rows
+    ]
+
+
+def _refresh_schedule() -> list[list]:
+    cfg = _get_config()
+    conn = get_conn(cfg.get("data_dir", "data"))
+    rows = outstanding_by_signer(conn)
+    conn.close()
+    return [
+        [r.get("signer") or "—", r.get("contract_count") or 0,
+         f"{r.get('total_receivable', 0):,.2f}",
+         f"{r.get('total_collected', 0):,.2f}",
+         f"{r.get('total_outstanding', 0):,.2f}"]
+        for r in rows
+    ]

@@ -146,11 +146,15 @@ def list_receivables(conn: sqlite3.Connection) -> list[dict]:
 
 # ─── 提醒 ────────────────────────────────────────────────────
 def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
-                    do_notify: bool = True) -> list[dict]:
+                    do_notify: bool = True,
+                    config: Optional[dict] = None) -> list[dict]:
     """扫描 pending 应收, 触发 逾期/7/3/1 天四级提醒。
 
+    Args:
+        config: 完整配置; 提供时启用 IM 通知 (飞书/企微 Webhook @签单人)
+
     Returns:
-        触发的提醒列表 [{"id","title","due_date","days_left","level"}, ...]
+        触发的提醒列表 [{"id","title","due_date","days_left","level","message"}, ...]
     """
     today = today or date.today()
     fired: list[dict] = []
@@ -195,7 +199,7 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
             msg += f" · 签单人: {signer}"
 
         if do_notify:
-            notify(f"回款提醒 [{level}]", msg)
+            _send_reminder(conn, config, signer, f"[{level}] {msg}")
 
         conn.execute(f"UPDATE receivables SET {flag_col}=1 WHERE id=?", (row["id"],))
         fired.append({
@@ -206,6 +210,21 @@ def check_reminders(conn: sqlite3.Connection, today: Optional[date] = None,
     if fired:
         conn.commit()
     return fired
+
+
+def _send_reminder(conn: sqlite3.Connection, config: Optional[dict],
+                   signer: str, message: str) -> None:
+    """发送提醒: 有 config 时走 IM (飞书/企微), 否则桌面通知。"""
+    if config and signer:
+        from core.notifier import notify_signer
+        smap = get_signer_by_name(conn, signer)
+        notify_signer(
+            config, signer, message,
+            feishu_id=(smap or {}).get("feishu_id", ""),
+            wecom_id=(smap or {}).get("wecom_id", ""),
+        )
+    else:
+        notify("回款提醒", message)
 
 
 def _level(days_left: int) -> tuple[Optional[str], str]:
@@ -340,6 +359,86 @@ def _get_file_path(conn: sqlite3.Connection, contract_id: int) -> str:
         "SELECT file_path FROM contracts WHERE id = ?", (contract_id,)
     ).fetchone()
     return row[0] if row else ""
+
+
+# ─── 签单人映射 ──────────────────────────────────────────────
+def upsert_signer(conn: sqlite3.Connection, name: str,
+                  feishu_id: str = "", wecom_id: str = "",
+                  phone: str = "", note: str = "") -> None:
+    """新增或更新签单人映射 (name 为唯一键)。"""
+    conn.execute(
+        """INSERT INTO signer_map (name, feishu_id, wecom_id, phone, note)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(name) DO UPDATE SET
+             feishu_id=excluded.feishu_id, wecom_id=excluded.wecom_id,
+             phone=excluded.phone, note=excluded.note""",
+        (name, feishu_id, wecom_id, phone, note),
+    )
+    conn.commit()
+
+
+def list_signers(conn: sqlite3.Connection) -> list[dict]:
+    """列出所有签单人映射。"""
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM signer_map ORDER BY name").fetchall()]
+
+
+def get_signer_by_name(conn: sqlite3.Connection, name: str) -> Optional[dict]:
+    """按人名查询签单人映射。"""
+    row = conn.execute(
+        "SELECT * FROM signer_map WHERE name = ?", (name,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_signer(conn: sqlite3.Connection, name: str) -> None:
+    """删除签单人映射。"""
+    conn.execute("DELETE FROM signer_map WHERE name = ?", (name,))
+    conn.commit()
+
+
+def outstanding_by_signer(conn: sqlite3.Connection) -> list[dict]:
+    """按签单人聚合未收金额 (仅已复核 + active 合同)。
+
+    Returns:
+        [{"signer", "contract_count", "total_receivable",
+          "total_collected", "total_outstanding"}, ...]
+    """
+    sql = """
+        SELECT c.signer,
+               COUNT(DISTINCT c.id) AS contract_count,
+               COALESCE(SUM(r.amount), 0) AS total_receivable,
+               COALESCE((SELECT SUM(col.amount) FROM collections col
+                         WHERE col.contract_id IN
+                           (SELECT id FROM contracts WHERE signer = c.signer)), 0)
+                 AS total_collected
+        FROM contracts c
+        LEFT JOIN receivables r ON r.contract_id = c.id
+        WHERE c.reviewed = 1 AND c.status = 'active' AND c.signer != ''
+        GROUP BY c.signer
+        ORDER BY total_outstanding DESC
+    """
+    # SQLite 不支持在 ORDER BY 引用别名内的表达式, 用子查询
+    sql = """
+        SELECT signer, contract_count, total_receivable, total_collected,
+               (total_receivable - total_collected) AS total_outstanding
+        FROM (
+            SELECT c.signer,
+                   COUNT(DISTINCT c.id) AS contract_count,
+                   COALESCE(SUM(r.amount), 0) AS total_receivable,
+                   COALESCE((SELECT SUM(col.amount) FROM collections col
+                             WHERE col.contract_id IN
+                               (SELECT id FROM contracts c2
+                                WHERE c2.signer = c.signer AND c2.reviewed=1)), 0)
+                     AS total_collected
+            FROM contracts c
+            LEFT JOIN receivables r ON r.contract_id = c.id
+            WHERE c.reviewed = 1 AND c.status = 'active' AND c.signer != ''
+            GROUP BY c.signer
+        )
+        ORDER BY total_outstanding DESC
+    """
+    return [dict(r) for r in conn.execute(sql).fetchall()]
 
 
 # ─── 向后兼容别名 (Phase 2 调用方) ──────────────────────────

@@ -19,6 +19,13 @@ export:
   dir: "exports"              # 相对项目根或绝对路径
   excel_summary: true         # 导出双 sheet 汇总 (合同主表 + 回款明细)
 
+# IM 通知 (回款提醒推送给签单人)
+# 使用群机器人 Webhook, 无需 OAuth 审批; 配合 signer_map 表 @mention 对应签单人
+notify:
+  feishu_webhook: ""          # 飞书群机器人: https://open.feishu.cn/open-apis/bot/v2/hook/{token}
+  wecom_webhook: ""           # 企微群机器人: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key}
+  desktop_fallback: true      # IM 未配置/失败时回退桌面通知
+
 # 模型下载源: huggingface | modelscope | local
 model_source: "huggingface"
 
