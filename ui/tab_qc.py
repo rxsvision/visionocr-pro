@@ -17,6 +17,10 @@ from core.defect_detector import (
     DEFAULT_PROMPT, run_detection, save_qc_result,
     list_recipes, load_recipe, save_recipe, delete_recipe,
 )
+from core.anomaly_bank import (
+    list_banks, bank_exists, delete_bank,
+    register_ok_samples, run_anomaly_detection,
+)
 
 _registry = None
 _config = None
@@ -47,6 +51,13 @@ def create_tab_qc(config: dict, registry):
                 detect_btn = gr.Button("🔍 一键检测", variant="primary", scale=2)
 
             gr.Markdown("---")
+            gr.Markdown("### 检测模式")
+            detect_mode = gr.Radio(
+                choices=["零样本 (Grounding DINO)", "少样本 (PatchCore)"],
+                value="零样本 (Grounding DINO)",
+                label="检测模式",
+            )
+
             gr.Markdown("### 检测配置")
 
             recipe_choice = gr.Dropdown(
@@ -74,6 +85,25 @@ def create_tab_qc(config: dict, registry):
                 recipe_del_btn = gr.Button("删除", scale=1)
             recipe_msg = gr.Markdown("")
 
+            gr.Markdown("---")
+            gr.Markdown("### 少样本注册 (PatchCore)")
+            pc_product = gr.Dropdown(
+                label="产品特征库",
+                choices=["(新建)"] + list_banks(),
+                value="(新建)",
+            )
+            pc_product_name = gr.Textbox(
+                label="新产品名称 (新建时填写)",
+                placeholder="如: PCB板_型号A",
+            )
+            pc_ok_upload = gr.File(
+                label="上传 OK 样本 (10~30张合格品图片)",
+                file_count="multiple",
+                file_types=[".png", ".jpg", ".jpeg", ".bmp", ".tiff"],
+            )
+            pc_register_btn = gr.Button("📦 注册建库", variant="secondary")
+            pc_status = gr.Markdown("")
+
         # ─── 右栏: 结果展示 ─────────────────────────────────
         with gr.Column(scale=2):
             gr.Markdown("### 检测结果")
@@ -98,7 +128,7 @@ def create_tab_qc(config: dict, registry):
     # ─── 事件绑定 ────────────────────────────────────────────
     detect_btn.click(
         fn=_run_detect,
-        inputs=[qc_image, prompt_input, threshold_slider],
+        inputs=[qc_image, prompt_input, threshold_slider, detect_mode, pc_product],
         outputs=[result_image, verdict_box, score_box, count_box,
                  detail_table, status_msg],
     )
@@ -121,11 +151,16 @@ def create_tab_qc(config: dict, registry):
         inputs=[recipe_name_input],
         outputs=[recipe_msg, recipe_choice],
     )
+    pc_register_btn.click(
+        fn=_register_bank,
+        inputs=[pc_product, pc_product_name, pc_ok_upload],
+        outputs=[pc_status, pc_product],
+    )
 
 
 # ─── 回调函数 ────────────────────────────────────────────────
-def _run_detect(image_path, prompt, threshold):
-    """一键检测: 调用 Grounding DINO, 返回标注图 + 判定。"""
+def _run_detect(image_path, prompt, threshold, mode, pc_product):
+    """一键检测: 根据模式调用 Grounding DINO 或 PatchCore。"""
     if not image_path:
         return (None, "—", "—", "—", [],
                 "⚠ 请先上传图片或使用相机采集。")
@@ -135,6 +170,31 @@ def _run_detect(image_path, prompt, threshold):
         return (None, "ERROR", "—", "—", [],
                 "⚠ 引擎未初始化, 请重启应用。")
 
+    # ─── PatchCore 少样本模式 ─────────────────────────────
+    if "PatchCore" in (mode or ""):
+        product = "" if pc_product == "(新建)" else (pc_product or "")
+        result = run_anomaly_detection(registry, image_path,
+                                       product_name=product,
+                                       threshold=threshold)
+        if result.get("error"):
+            return (None, "ERROR", "—", "—", [],
+                    f"⚠ {result['error']}")
+
+        verdict = result["pred_label"]
+        score = result.get("score", 0)
+        overlay = result.get("heatmap_overlay")
+
+        if verdict == "OK":
+            verdict_str = "✓ OK (合格)"
+        else:
+            verdict_str = f"✗ NG (异常分数 {score:.3f})"
+
+        table = [["异常热力图", f"{score:.4f}", "见标注图"]]
+        status = f"PatchCore 检测 · 产品: {product or '默认'} · 阈值: {threshold}"
+        return (overlay, verdict_str, f"{score:.4f}", "1" if verdict == "NG" else "0",
+                table, status)
+
+    # ─── Grounding DINO 零样本模式 (默认) ─────────────────
     result = run_detection(registry, image_path, prompt=prompt,
                            threshold=threshold)
 
@@ -223,3 +283,42 @@ def _delete_recipe_ui(name):
         recipes = ["(自定义)"] + list_recipes()
         return f"✓ 配方「{name.strip()}」已删除。", gr.update(choices=recipes, value="(自定义)")
     return f"⚠ 配方「{name.strip()}」不存在。", gr.update()
+
+
+def _register_bank(pc_product, pc_product_name, files):
+    """注册 OK 样本, 构建 PatchCore 特征库。"""
+    # 确定产品名
+    if pc_product and pc_product != "(新建)":
+        product = pc_product
+    elif pc_product_name and pc_product_name.strip():
+        product = pc_product_name.strip()
+    else:
+        return "⚠ 请选择已有产品或输入新产品名称。", gr.update()
+
+    if not files:
+        return "⚠ 请上传 OK 样本图片 (建议 10~30 张合格品)。", gr.update()
+
+    # 收集有效路径
+    paths = []
+    for f in files:
+        p = f.name if hasattr(f, "name") else str(f)
+        if os.path.isfile(p):
+            paths.append(p)
+
+    if len(paths) < 3:
+        return f"⚠ 有效图片仅 {len(paths)} 张, 建议至少 10 张。", gr.update()
+
+    registry = _registry
+    if registry is None:
+        return "⚠ 引擎未初始化。", gr.update()
+
+    result = register_ok_samples(registry, product, paths)
+    if result.get("error"):
+        return f"⚠ 建库失败: {result['error']}", gr.update()
+
+    banks = ["(新建)"] + list_banks()
+    msg = (f"✓ 产品「{product}」特征库已建立\n\n"
+           f"- OK 样本: {result.get('n_images', 0)} 张\n"
+           f"- 特征库大小: {result.get('bank_size', 0)} patches\n"
+           f"- 保存位置: {result.get('saved_to', '')}")
+    return msg, gr.update(choices=banks, value=product)
