@@ -111,6 +111,21 @@ camera:
   exposure_us: 5000
   hik_sdk_path: "C:\\Program Files (x86)\\MVS\\Development\\Bin\\Win64_x64"
 
+# Sizector 3D 结构光深度相机 (Phase 4C: 深度融合缺陷检测)
+# 通过 .NET wrapper (MPSizectorS_DotNet.dll) + pythonnet 调用, 输出深度图(mm)+RGB
+sizector:
+  enabled: true
+  # .NET wrapper 目录 (含 MPSizectorS_DotNet.dll), 按实际 SDK 安装路径修改
+  dll_dir: "E:/2_技术产品与项目交付/2_2_SDK与开发环境/1_11AI视觉应用模块与3D视觉算法库开发包/MPSizectorS_SDK_V2_70/02_Binary/03_SizectorS_NET"
+  index: 0                   # 多相机时按枚举顺序选择
+  serial: ""                 # 可选: 按序列号精确匹配目标相机 (优先于 index)
+  working_mode: "precise"    # fastest | fast | standard | precise | super_precise | dynamic
+  use_rgb: true              # 采集辅助 RGB (否则仅灰度)
+  timeout_ms: 5000
+  mock: false                # true 时不连硬件, 输出合成深度帧 (开发/演示/CI)
+  mock_width: 640
+  mock_height: 480
+
 # 默认激活场景 (UI 启动时优先展示)
 default_scenes:
   - "contract"               # 合同自动化 (P0)

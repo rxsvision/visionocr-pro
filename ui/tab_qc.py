@@ -25,6 +25,10 @@ from core.anomaly_bank import (
 _registry = None
 _config = None
 
+# 缓存最近一次 3D 深度帧 (DepthFrame), 供"一键检测"阶段做深度融合判定。
+# 工人流程: 选"3D深度相机"采集 -> 深度帧存入此处 -> 检测时自动融合。
+_last_depth_frame = None
+
 
 def set_registry(registry) -> None:
     global _registry
@@ -45,7 +49,16 @@ def create_tab_qc(config: dict, registry):
         # ─── 左栏: 输入 + 配置 ─────────────────────────────
         with gr.Column(scale=1):
             gr.Markdown("### 图像输入")
+            image_source = gr.Radio(
+                choices=["上传图像", "2D彩色相机", "3D深度相机 (Sizector)"],
+                value="上传图像",
+                label="图像来源",
+            )
             qc_image = gr.Image(label="拍照 / 上传待检图像", type="filepath")
+            depth_preview = gr.Image(
+                label="3D 深度图预览 (伪彩, 仅深度相机)",
+                visible=False, height=200,
+            )
             with gr.Row():
                 camera_btn = gr.Button("📷 相机采集", scale=1)
                 detect_btn = gr.Button("🔍 一键检测", variant="primary", scale=2)
@@ -74,6 +87,22 @@ def create_tab_qc(config: dict, registry):
             threshold_slider = gr.Slider(
                 0.1, 0.9, value=0.3, step=0.05,
                 label="置信度阈值 (越低越敏感, 推荐 0.25~0.4)",
+            )
+
+            gr.Markdown("---")
+            gr.Markdown("### 3D 深度融合 (结构光)")
+            fusion_enable = gr.Checkbox(
+                label="启用 3D 深度融合 (深度几何 + 2D 纹理联合判定)",
+                value=True,
+            )
+            depth_threshold = gr.Slider(
+                0.1, 3.0, value=0.5, step=0.1,
+                label="深度偏差阈值 mm (越小越敏感, 按件公差设定)",
+            )
+            fusion_mode_radio = gr.Radio(
+                choices=["OR (高召回, 推荐)", "AND (高精确)", "仅深度"],
+                value="OR (高召回, 推荐)",
+                label="融合判定策略",
             )
 
             gr.Markdown("---")
@@ -128,13 +157,20 @@ def create_tab_qc(config: dict, registry):
     # ─── 事件绑定 ────────────────────────────────────────────
     detect_btn.click(
         fn=_run_detect,
-        inputs=[qc_image, prompt_input, threshold_slider, detect_mode, pc_product],
+        inputs=[qc_image, prompt_input, threshold_slider, detect_mode, pc_product,
+                fusion_enable, depth_threshold, fusion_mode_radio],
         outputs=[result_image, verdict_box, score_box, count_box,
                  detail_table, status_msg],
     )
     camera_btn.click(
         fn=_camera_capture,
-        outputs=[qc_image, status_msg],
+        inputs=[image_source],
+        outputs=[qc_image, depth_preview, status_msg],
+    )
+    image_source.change(
+        fn=_on_source_change,
+        inputs=[image_source],
+        outputs=[depth_preview],
     )
     recipe_choice.change(
         fn=_on_recipe_change,
@@ -159,8 +195,9 @@ def create_tab_qc(config: dict, registry):
 
 
 # ─── 回调函数 ────────────────────────────────────────────────
-def _run_detect(image_path, prompt, threshold, mode, pc_product):
-    """一键检测: 根据模式调用 Grounding DINO 或 PatchCore。"""
+def _run_detect(image_path, prompt, threshold, mode, pc_product,
+                fusion_enable=False, depth_threshold=0.5, fusion_mode="OR (高召回, 推荐)"):
+    """一键检测: 根据模式调用 Grounding DINO / PatchCore / 3D 深度融合。"""
     if not image_path:
         return (None, "—", "—", "—", [],
                 "⚠ 请先上传图片或使用相机采集。")
@@ -169,6 +206,12 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product):
     if registry is None:
         return (None, "ERROR", "—", "—", [],
                 "⚠ 引擎未初始化, 请重启应用。")
+
+    # ─── 3D 深度融合模式 (深度相机已采集 + 开关开启) ─────────
+    global _last_depth_frame
+    if fusion_enable and _last_depth_frame is not None and "PatchCore" not in (mode or ""):
+        return _run_fusion_detect(registry, image_path, prompt, threshold,
+                                  depth_threshold, fusion_mode)
 
     # ─── PatchCore 少样本模式 ─────────────────────────────
     if "PatchCore" in (mode or ""):
@@ -237,23 +280,145 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product):
             str(count), table, status)
 
 
-def _camera_capture():
-    """海康相机采集一帧。"""
+def _camera_capture(image_source):
+    """按图像来源采集一帧。返回 (待检图路径, 深度预览图, 状态)。"""
+    global _last_depth_frame
+    source = image_source or "上传图像"
+
+    # ─── 3D 深度相机 (Sizector) ─────────────────────────────
+    if "3D" in source:
+        try:
+            cfg = _get_config()
+            import cv2
+            from core.sizector_camera import create_depth_camera
+            cam = create_depth_camera(cfg)
+            if not cam.open():
+                _last_depth_frame = None
+                return None, None, "⚠ 深度相机打开失败, 请检查 USB3.0 连接 / SDK 配置 (或开启 sizector.mock)"
+            frame = cam.capture()
+            cam.close()
+            if frame is None:
+                _last_depth_frame = None
+                return None, None, "⚠ 深度采集失败, 请检查曝光 / 工作距离"
+
+            _last_depth_frame = frame
+            tmp_dir = Path(tempfile.gettempdir())
+
+            # 待检图: 优先 RGB, 否则灰度, 再否则深度伪彩
+            if frame.rgb is not None:
+                bgr = frame.rgb
+            elif frame.gray is not None:
+                bgr = cv2.cvtColor(frame.gray, cv2.COLOR_GRAY2BGR)
+            else:
+                bgr = frame.depth_colormap()
+            img_path = tmp_dir / "visionocr_qc_3d.png"
+            cv2.imwrite(str(img_path), bgr)
+
+            depth_vis = frame.depth_colormap()
+            info = (f"📷 3D 采集成功 · {frame.width}x{frame.height} · "
+                    f"Z=[{frame.z_min:.2f}, {frame.z_max:.2f}]mm · "
+                    f"有效率 {frame.valid_ratio:.0%}")
+            return str(img_path), depth_vis, info
+        except Exception as e:  # noqa: BLE001
+            _last_depth_frame = None
+            return None, None, f"⚠ 深度相机异常: {e}"
+
+    # ─── 2D 彩色相机 (海康等) ───────────────────────────────
+    if "2D" in source:
+        try:
+            cfg = _get_config()
+            import cv2
+            from core.camera import create_camera
+            cam = create_camera(cfg)
+            if cam.open():
+                bgr = cam.grab()
+                cam.close()
+                if bgr is not None:
+                    _last_depth_frame = None  # 2D 来源清空深度帧
+                    tmp = Path(tempfile.gettempdir()) / "visionocr_qc_capture.png"
+                    cv2.imwrite(str(tmp), bgr)
+                    return str(tmp), None, "📷 2D 采集成功"
+            return None, None, "⚠ 相机打开失败, 请检查连接和 MVS 配置"
+        except Exception as e:  # noqa: BLE001
+            return None, None, f"⚠ 相机异常: {e}"
+
+    # ─── 上传图像 ───────────────────────────────────────────
+    _last_depth_frame = None
+    return None, None, "ℹ 请在上方组件直接上传待检图像。"
+
+
+def _on_source_change(image_source):
+    """切换图像来源时控制深度预览组件显隐。"""
+    visible = bool(image_source and "3D" in image_source)
+    return gr.update(visible=visible)
+
+
+def _run_fusion_detect(registry, image_path, prompt, threshold,
+                       depth_threshold, fusion_mode_label):
+    """3D 深度融合检测: 2D 纹理 (Grounding DINO) + 深度几何联合判定。"""
+    import cv2
+    from core.defect_detector import run_detection
+    from core.depth_fusion import fuse_detection, annotate_depth
+
+    frame = _last_depth_frame
+    if frame is None:
+        return (None, "ERROR", "—", "—", [],
+                "⚠ 无深度帧, 请先用 3D 深度相机采集。")
+
+    # 融合策略文案 -> 内部枚举
+    if "AND" in (fusion_mode_label or ""):
+        fusion_mode = "and"
+    elif "仅深度" in (fusion_mode_label or ""):
+        fusion_mode = "depth_only"
+    else:
+        fusion_mode = "or"
+
+    # 先跑 2D 检测 (仅深度模式时跳过以省时)
+    result_2d = None
+    if fusion_mode != "depth_only":
+        result_2d = run_detection(registry, image_path, prompt=prompt,
+                                  threshold=threshold)
+
+    fused = fuse_detection(frame, result_2d,
+                           depth_threshold_mm=depth_threshold,
+                           fusion_mode=fusion_mode)
+
+    verdict = fused["verdict"]
+    count = fused["count"]
+    annotated = annotate_depth(frame, fused)
+
+    if verdict == "OK":
+        verdict_str = "✓ OK (合格)"
+        score_str = "—"
+    else:
+        max_conf = max((d["confidence"] for d in fused["fused_defects"]), default=0)
+        verdict_str = f"✗ NG (不合格 · {count}处)"
+        score_str = f"{max_conf:.2f}"
+
+    # 明细表
+    table = []
+    for d in fused["fused_defects"]:
+        x1, y1, x2, y2 = d["bbox"]
+        table.append([
+            f"{d['source']} · {d['type']}",
+            f"{d['confidence']:.0%}",
+            f"({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})",
+        ])
+
+    # 落库
     try:
         cfg = _get_config()
-        from core.camera import create_camera
-        cam = create_camera(cfg)
-        if cam.open():
-            frame = cam.grab()
-            cam.close()
-            if frame is not None:
-                import cv2
-                tmp = Path(tempfile.gettempdir()) / "visionocr_qc_capture.png"
-                cv2.imwrite(str(tmp), frame)
-                return str(tmp), "📷 采集成功"
-        return None, "⚠ 相机打开失败, 请检查连接和 MVS 配置"
-    except Exception as e:
-        return None, f"⚠ 相机异常: {e}"
+        conn = get_conn(cfg.get("data_dir", "data"))
+        save_qc_result(conn, image_path, verdict, fused["fused_defects"],
+                       float(score_str) if score_str != "—" else 0.0,
+                       f"[3D融合] {prompt}")
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass  # 落库失败不阻断检测
+
+    status = (f"3D 深度融合 · 策略 {fusion_mode.upper()} · "
+              f"深度阈值 {depth_threshold}mm · {fused['reason']}")
+    return (annotated, verdict_str, score_str, str(count), table, status)
 
 
 def _on_recipe_change(recipe_name):

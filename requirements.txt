@@ -16,3 +16,7 @@ apscheduler>=3.10
 # LLM (optional)
 # transformers>=4.40
 # accelerate>=0.30
+
+# 3D 深度相机 Sizector (Phase 4C, optional)
+# 仅 Windows + .NET Framework 4.7.2+ 需要; 通过 .NET wrapper 调用 MPSizectorS SDK
+# pythonnet>=3.0
