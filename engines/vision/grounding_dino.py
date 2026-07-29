@@ -60,13 +60,19 @@ class GroundingDINOEngine(BaseEngine):
 
         try:
             logger.info("加载 Grounding DINO (%s) → %s ...", model_id, device)
-            self._model = hf_pipeline(
+            pipe_kwargs = dict(
                 task="zero-shot-object-detection",
                 model=model_id,
                 device=device,
             )
+            # GPU 时启用 FP16 半精度: 显存减半, 推理加速 ~40%
+            if device >= 0:
+                import torch
+                pipe_kwargs["torch_dtype"] = torch.float16
+            self._model = hf_pipeline(**pipe_kwargs)
             self.state = EngineState.READY
-            logger.info("Grounding DINO 就绪")
+            logger.info("Grounding DINO 就绪 (%s)",
+                        "FP16" if device >= 0 else "FP32")
         except Exception as e:
             logger.error("Grounding DINO 加载失败: %s", e)
             self.state = EngineState.ERROR

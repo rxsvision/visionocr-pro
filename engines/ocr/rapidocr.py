@@ -1,7 +1,7 @@
-"""RapidOCR - PP-OCRv6 CPU 兜底方案
+"""RapidOCR - PP-OCRv6 ONNXRuntime 方案 (GPU 优先)
 
-基于 rapidocr_onnxruntime 的轻量级 OCR 引擎, 纯 CPU 推理,
-作为无 GPU 环境或其它引擎不可用时的最终兜底方案。
+基于 rapidocr_onnxruntime 的轻量级 OCR 引擎, 支持 GPU (CUDA) 加速,
+作为通用 OCR 兜底方案。onnxruntime-gpu 已装时自动走 CUDA。
 
 输出格式 (统一约定):
     {
@@ -23,23 +23,23 @@ from engines.base import BaseEngine, EngineMeta, EngineState
 
 
 class RapidOCREngine(BaseEngine):
-    """PP-OCRv6 (ONNXRuntime) CPU 兜底引擎"""
+    """PP-OCRv6 (ONNXRuntime) GPU 优先引擎"""
 
     @property
     def meta(self) -> EngineMeta:
         return EngineMeta(
             name="rapidocr",
-            display_name="PP-OCRv6 (CPU兜底)",
+            display_name="PP-OCRv6 (ONNX·GPU优先)",
             category="ocr",
             vram_gb=0.5,
             license="Apache-2.0",
-            description="轻量级 CPU OCR, 无 GPU 时兜底方案",
-            tags=["CPU", "轻量", "兜底"],
+            description="轻量级 OCR, onnxruntime-gpu 时自动 CUDA 加速",
+            tags=["ONNX", "GPU", "轻量", "兜底"],
         )
 
     # ─── 生命周期 ────────────────────────────────────────────
     def load(self) -> None:
-        """初始化 RapidOCR 实例 (按需加载 ONNX 模型)"""
+        """初始化 RapidOCR 实例 (按需加载 ONNX 模型, GPU 优先)"""
         self.state = EngineState.LOADING
         try:
             # 延迟导入: 未安装时给出明确提示, 不污染全局
@@ -59,9 +59,30 @@ class RapidOCREngine(BaseEngine):
         try:
             # 从 config 读取可选参数, 兼容缺省
             ocr_cfg = (self.config or {}).get("ocr", {}).get("rapidocr", {})
+
+            # 检测 onnxruntime-gpu 是否可用, 可用则指定 CUDA Provider
+            providers = None
+            try:
+                import onnxruntime as ort
+                avail = ort.get_available_providers()
+                if "CUDAExecutionProvider" in avail:
+                    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            except Exception:  # noqa: BLE001
+                pass
+
+            if providers and "providers" not in ocr_cfg:
+                ocr_cfg = dict(ocr_cfg)  # 不修改原 config
+                # rapidocr_onnxruntime 内部对 det/rec/cls 各建 session,
+                # 部分版本支持全局 providers 参数
+                ocr_cfg.setdefault("det_providers", providers)
+                ocr_cfg.setdefault("rec_providers", providers)
+                ocr_cfg.setdefault("cls_providers", providers)
+
             self._model = RapidOCR(**ocr_cfg)
+            self._use_gpu = providers is not None
             self.state = EngineState.READY
-            print("[RapidOCR] 加载完成 (CPU/ONNX)")
+            mode = "GPU/CUDA" if self._use_gpu else "CPU"
+            print(f"[RapidOCR] 加载完成 ({mode}/ONNX)")
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
             print(f"[RapidOCR] 模型加载失败: {e}")

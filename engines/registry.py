@@ -59,13 +59,21 @@ class EngineRegistry:
         """延迟导入并注册所有引擎, 缺失依赖的引擎静默跳过"""
         import importlib
 
+        t0 = time.time()
+        ok_count = 0
+        skip_count = 0
         for module_path, class_name in self.ENGINE_MANIFEST:
             try:
                 mod = importlib.import_module(module_path)
                 cls = getattr(mod, class_name)
                 self.register(cls(self.config))
+                ok_count += 1
             except Exception as e:
+                skip_count += 1
                 print(f"[Registry] Skip {class_name}: {e}")
+        elapsed = time.time() - t0
+        print(f"[Registry] 注册完成: {ok_count} 引擎就绪, "
+              f"{skip_count} 跳过 (耗时 {elapsed:.2f}s)")
 
     # ─── 获取 ───────────────────────────────────────────────
     def get(self, name: str) -> Optional[BaseEngine]:
