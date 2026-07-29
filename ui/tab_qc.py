@@ -148,8 +148,8 @@ def create_tab_qc(config: dict, registry):
                     label="缺陷数", scale=1, interactive=False)
 
             detail_table = gr.Dataframe(
-                headers=["缺陷类型", "置信度", "位置 (x1,y1,x2,y2)"],
-                label="检测明细",
+                headers=["#", "缺陷类型", "置信度", "位置 (x1,y1,x2,y2)"],
+                label="检测明细 (编号对应图上标注)",
                 wrap=True,
             )
             status_msg = gr.Markdown("")
@@ -232,7 +232,7 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         else:
             verdict_str = f"✗ NG (异常分数 {score:.3f})"
 
-        table = [["异常热力图", f"{score:.4f}", "见标注图"]]
+        table = [["1", "异常热力图", f"{score:.4f}", "见标注图"]]
         status = f"PatchCore 检测 · 产品: {product or '默认'} · 阈值: {threshold}"
         return (overlay, verdict_str, f"{score:.4f}", "1" if verdict == "NG" else "0",
                 table, status)
@@ -257,9 +257,10 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
     # 明细表
     table = []
-    for det in result["detections"]:
+    for idx, det in enumerate(result["detections"], 1):
         box = det["box"]
         table.append([
+            str(idx),
             det["label"],
             f"{det['score']:.2%}",
             f"({box[0]:.0f}, {box[1]:.0f}, {box[2]:.0f}, {box[3]:.0f})",
@@ -397,9 +398,10 @@ def _run_fusion_detect(registry, image_path, prompt, threshold,
 
     # 明细表
     table = []
-    for d in fused["fused_defects"]:
+    for idx, d in enumerate(fused["fused_defects"], 1):
         x1, y1, x2, y2 = d["bbox"]
         table.append([
+            str(idx),
             f"{d['source']} · {d['type']}",
             f"{d['confidence']:.0%}",
             f"({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})",

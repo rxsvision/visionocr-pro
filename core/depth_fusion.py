@@ -283,7 +283,7 @@ def fuse_detection(
 # 可视化标注
 # =============================================================================
 def annotate_depth(frame, fused: dict, alpha: float = 0.5) -> np.ndarray:
-    """生成融合标注图: RGB 底图 + 深度异常伪彩叠加 + 缺陷框。
+    """生成融合标注图: RGB 底图 + 深度异常伪彩叠加 + 编号缺陷框 + OK/NG 印章。
 
     Args:
         frame:  DepthFrame。
@@ -294,6 +294,7 @@ def annotate_depth(frame, fused: dict, alpha: float = 0.5) -> np.ndarray:
         (H, W, 3) uint8 BGR 标注图。
     """
     import cv2
+    from core.defect_detector import draw_verdict_badge
 
     h, w = frame.height, frame.width
 
@@ -318,8 +319,12 @@ def annotate_depth(frame, fused: dict, alpha: float = 0.5) -> np.ndarray:
         overlay[pit] = [220, 120, 0]    # BGR 蓝
         canvas = cv2.addWeighted(overlay, alpha, canvas, 1 - alpha, 0)
 
-    # 绘制缺陷框 + 标签
-    for defect in fused.get("fused_defects", []):
+    # 绘制缺陷框 + 编号标签
+    base_thickness = max(3, min(w, h) // 200)
+    font_scale = max(0.6, min(w, h) / 1200)
+    circle_r = max(14, min(w, h) // 45)
+
+    for idx, defect in enumerate(fused.get("fused_defects", []), 1):
         x1, y1, x2, y2 = [int(v) for v in defect["bbox"]]
         src = defect["source"]
         if src == "3D+2D":
@@ -328,13 +333,38 @@ def annotate_depth(frame, fused: dict, alpha: float = 0.5) -> np.ndarray:
             color = (0, 140, 255)    # 橙: 仅深度
         else:
             color = (0, 220, 220)    # 黄: 仅2D
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
 
-        label = f"[{src}] {defect['type']}"
-        # 文字背景框提升可读性
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(canvas, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-        cv2.putText(canvas, label, (x1 + 2, y1 - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        # 检测框 (加粗)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, base_thickness)
+
+        # 编号圆圈 (与明细表行号对应)
+        cx, cy = x1, y1
+        cv2.circle(canvas, (cx, cy), circle_r, color, -1)
+        cv2.circle(canvas, (cx, cy), circle_r, (255, 255, 255), 2)
+        num_text = str(idx)
+        (ntw, nth), _ = cv2.getTextSize(num_text, cv2.FONT_HERSHEY_SIMPLEX,
+                                         font_scale * 0.9, 2)
+        cv2.putText(canvas, num_text,
+                    (cx - ntw // 2, cy + nth // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+
+        # 标签 (编号 + 来源 + 类型, 带背景)
+        label = f"#{idx} [{src}] {defect['type']}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX,
+                                       font_scale, 2)
+        label_y = y1 - th - 10
+        if label_y < 0:
+            label_y = y2 + th + 10
+        cv2.rectangle(canvas, (x1, label_y - th - 4),
+                      (x1 + tw + 8, label_y + 4), color, -1)
+        cv2.putText(canvas, label, (x1 + 4, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+
+    # 大印章: OK / NG
+    verdict = fused.get("verdict", "OK")
+    count = fused.get("count", 0)
+    draw_verdict_badge(canvas, verdict, count=count)
 
     return canvas
