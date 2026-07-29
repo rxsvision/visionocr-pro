@@ -11,6 +11,13 @@ THEME = gr.themes.Soft()
 CSS = """
 .main-header { text-align: center; margin-bottom: 8px; }
 .status-bar { font-size: 0.85em; color: #666; }
+.log-panel textarea {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace !important;
+    font-size: 0.82em !important;
+    background: #1e1e2e !important;
+    color: #a6e3a1 !important;
+    border-radius: 6px;
+}
 """
 
 

@@ -18,6 +18,13 @@ from ui.main import create_app, THEME, CSS
 
 def main():
     cfg = load_config()
+
+    # HuggingFace 镜像: 国内网络不稳定时通过 hf-mirror.com 加速下载
+    import os
+    hf_mirror = cfg.get("hf_mirror", "")
+    if hf_mirror:
+        os.environ.setdefault("HF_ENDPOINT", hf_mirror)
+
     init_db(cfg["data_dir"])
     registry = EngineRegistry(cfg)
     registry.register_all()

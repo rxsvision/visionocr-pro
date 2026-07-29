@@ -18,11 +18,10 @@ from engines.base import BaseEngine, EngineMeta, EngineState
 
 # 候选模型 ID (按优先级尝试, 兼容尚未发布/更名的情况)
 _HF_CANDIDATES = [
-    "AIDC-AI/Ovis-OCR2-0.8B",
-    "AIDC-AI/Ovis-OCR2",
-    "AIDC-AI/Ovis2-OCR",
+    "ATH-MaaS/OvisOCR2",
+    "ATH-MaaS/OvisOCR",
 ]
-_LOCAL_DIR_NAMES = ["ovis-ocr2", "Ovis-OCR2-0.8B", "ovisocr2"]
+_LOCAL_DIR_NAMES = ["ovis-ocr2", "OvisOCR2", "ovisocr2"]
 
 
 class OvisOCR2Engine(BaseEngine):
@@ -56,10 +55,19 @@ class OvisOCR2Engine(BaseEngine):
             from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore  # noqa: F401
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[OvisOCR2] 依赖缺失: 请执行 `pip install transformers torch pillow` "
-                f"后重试。原始错误: {e}"
-            )
+            err_msg = str(e)
+            if "DLL load failed" in err_msg:
+                print(
+                    "[OvisOCR2] DLL 加载失败 (非包缺失): 通常是 CUDA/cuDNN 版本冲突。\n"
+                    "  修复: pip install torch --force-reinstall --index-url "
+                    "https://download.pytorch.org/whl/cu126\n"
+                    f"  原始错误: {e}"
+                )
+            else:
+                print(
+                    "[OvisOCR2] 依赖缺失: 请执行 `pip install transformers torch pillow` "
+                    f"后重试。原始错误: {e}"
+                )
             return
 
         # 2) 解析模型路径: 本地优先, 再 HuggingFace

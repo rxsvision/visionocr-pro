@@ -11,8 +11,8 @@ data_dir: "data"
 # 我方主体 (回款管理基础): 用于判断合同款项方向
 # 合同里出现该主体名称作为收款方时, 对应款项记为"应收/回款"; 反之记为"应付"
 company:
-  name: ""                    # 填入公司全称, 如 "苏州锐新视科技有限公司"
-  aliases: []                 # 简称/别名列表, 如 ["锐新视", "RXS"]
+  name: "苏州锐新视科技有限公司"
+  aliases: ["锐新视", "RXS", "锐新视科技"]
 
 # 合同汇总导出 (插件化: excel/csv/yonyou/kingdee, 按需启用)
 export:
@@ -57,6 +57,9 @@ scheduler:
 
 # 模型下载源: huggingface | modelscope | local
 model_source: "huggingface"
+# HuggingFace 镜像 (国内网络不稳定时启用, 自动设置 HF_ENDPOINT)
+# 可选: "" (直连) | "https://hf-mirror.com" (国内镜像)
+hf_mirror: "https://hf-mirror.com"
 
 # 设备: cuda | cpu | auto
 device: "auto"
@@ -70,10 +73,21 @@ vram:
 # OCR 引擎配置
 ocr:
   default_engine: "auto"     # auto | ovisocr2 | paddleocr_vl | hunyuan | rapidocr
+  confidence_threshold: 0.75 # 置信度 < 此值 → "待人工复核" (NG 拦截)
   scene_classifier:
     enabled: true
     confidence_threshold: 0.7
     fallback_engine: "paddleocr_vl"
+  # 图像预处理 (提升工业标记/小字符/低对比度场景精度)
+  preprocess:
+    enabled: true
+    clahe: true              # CLAHE 对比度增强
+    clahe_clip: 2.0
+    sharpen: true            # USM 锐化
+    upscale: true            # 小图放大 (高度 < 800px 时 2x)
+    upscale_factor: 2.0
+    denoise: true            # 去噪
+    binarize: false          # 自适应二值化 (仅纯黑白刻字场景开启)
 
 # LLM 配置 (分级路由: 本地优先, 云端兜底)
 llm:
@@ -139,7 +153,7 @@ barcode:
 # 质检
 qc:
   anomaly_algorithm: "dinomaly"   # dinomaly | patchcore | visualad
-  grounding_dino_model: "base"    # tiny (快, 1.2GB) | base (精, 2.5GB)
+  grounding_dino_model: "tiny"    # tiny (快, 1.2GB) | base (精, 2.5GB)
   confidence_threshold: 0.5
   auto_ng_alert: true
 

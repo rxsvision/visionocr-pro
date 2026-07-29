@@ -1,210 +1,192 @@
-"""图像预处理管线 (Phase 3F 审查后新增)
+"""图像预处理管线 - 提升 OCR 识别精度
 
-解决工业相机/手机拍照/扫描存档/截图等场景下的 OCR 前图像质量问题。
-管线按条件触发, 不对已满足质量要求的图像做无意义处理:
-  1. 暗色/反转检测 → 反色
-  2. 对比度不足 → CLAHE 自适应增强
-  3. 噪声过高 → 快速降噪
-  4. 倾斜 → 纠偏 (Hough)
-  5. 分辨率不足 → 放大 (小图/截图)
-  6. 光照不均 → 背景归一化
+针对工业场景 (零件标记、铭牌、激光刻字) 的预处理策略:
+1. CLAHE 对比度增强 (解决低对比度/光照不均)
+2. 超分辨率放大 (小字符 -> 放大到引擎最佳识别尺寸)
+3. 自适应二值化 (解决背景干扰)
+4. 去噪 (高斯/中值, 解决颗粒噪声)
 
-设计原则: 精度第一, 不引入伪影; 处理耗时 < 200ms (1080p)。
+设计原则:
+- 不改变原始图像, 输出预处理后的临时文件
+- 可通过 config 开关控制各步骤
+- 对已经是高质量文档图的输入, 预处理应无副作用或轻微正增益
 """
 from __future__ import annotations
 
+import tempfile
+import uuid
+from pathlib import Path
+from typing import Optional
+
+import cv2
 import numpy as np
 
-try:
-    import cv2
-except ImportError:
-    cv2 = None  # type: ignore
+# 输入尺寸保护: 超过此尺寸的图像先缩小再处理 (防 OOM)
+MAX_INPUT_SIZE = 4096
 
 
-# ─── 阈值常量 ────────────────────────────────────────────────
-_DARK_BG_MEAN = 80        # 背景平均灰度 < 此值 → 疑似暗色/反转
-_LOW_CONTRAST_STD = 40    # 灰度标准差 < 此值 → 对比度不足
-_NOISE_LAPLACIAN = 800    # Laplacian 方差 > 此值且 mean 低 → 噪声
-_MIN_TEXT_HEIGHT = 25     # 目标最小文字高度 (px)
-_UPSCALE_MAX = 2.5        # 最大放大倍率
-_SKEW_ANGLE_THRESH = 0.5  # 倾斜角度 > 此值才纠偏
-_MAX_DIM_FOR_UPSCALE = 1200  # 短边 < 此值才考虑放大
+# 预处理配置默认值
+DEFAULT_PREPROCESS_CFG = {
+    "enabled": True,
+    "clahe": True,
+    "clahe_clip": 2.0,
+    "clahe_grid": 8,
+    "upscale": True,
+    "upscale_min_height": 800,
+    "upscale_factor": 2.0,
+    "upscale_max_height": 2400,
+    "denoise": True,
+    "denoise_strength": 3,
+    "binarize": False,
+    "binarize_block": 11,
+    "binarize_c": 2,
+    "sharpen": True,
+    "sharpen_amount": 0.5,
+}
 
 
-def preprocess_image(image: np.ndarray, *,
-                     do_deskew: bool = True,
-                     do_denoise: bool = True,
-                     do_enhance: bool = True,
-                     do_upscale: bool = True,
-                     ) -> np.ndarray:
-    """对图像执行条件式预处理, 返回处理后图像 (BGR)。
+def preprocess_for_ocr(image_path: str,
+                       cfg: Optional[dict] = None,
+                       ) -> tuple[str, dict]:
+    """对输入图像执行 OCR 预处理, 返回 (处理后路径, 元信息)。"""
+    p = {**DEFAULT_PREPROCESS_CFG, **(cfg or {})}
+    meta = {"original": image_path, "steps": [], "size_before": None, "size_after": None}
 
-    Args:
-        image: BGR numpy 数组 (H, W, 3) 或灰度 (H, W)
-        do_*: 各步骤开关 (可按场景关闭)
+    if not p.get("enabled", True):
+        return image_path, meta
+
+    img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    if img is None:
+        return image_path, meta
+
+    if img.ndim == 3 and img.shape[2] == 4:
+        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+
+    # 输入尺寸保护: 超大图先缩小 (防 OOM)
+    h0, w0 = img.shape[:2]
+    if max(h0, w0) > MAX_INPUT_SIZE:
+        scale = MAX_INPUT_SIZE / max(h0, w0)
+        img = cv2.resize(img, (int(w0 * scale), int(h0 * scale)),
+                         interpolation=cv2.INTER_AREA)
+        meta["steps"].append(f"downscale_{max(h0,w0)}→{MAX_INPUT_SIZE}")
+
+    h, w = img.shape[:2]
+    meta["size_before"] = f"{w}x{h}"
+
+    # 1. 去噪
+    if p.get("denoise"):
+        k = int(p.get("denoise_strength", 3))
+        if k % 2 == 0:
+            k += 1
+        if img.ndim == 2:
+            img = cv2.medianBlur(img, k)
+        else:
+            img = cv2.fastNlMeansDenoisingColored(img, None, 3, 3, 7, 21)
+        meta["steps"].append("denoise")
+
+    # 2. CLAHE 对比度增强
+    if p.get("clahe"):
+        clip = float(p.get("clahe_clip", 2.0))
+        grid = int(p.get("clahe_grid", 4))
+        clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(grid, grid))
+        if img.ndim == 2:
+            img = clahe.apply(img)
+        else:
+            lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+            lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+            img = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        meta["steps"].append("clahe")
+
+    # 3. 锐化 (Unsharp Mask)
+    if p.get("sharpen"):
+        amount = float(p.get("sharpen_amount", 0.5))
+        blurred = cv2.GaussianBlur(img, (0, 0), 2.0)
+        img = cv2.addWeighted(img, 1.0 + amount, blurred, -amount, 0)
+        meta["steps"].append("sharpen")
+
+    # 4. 小图放大
+    if p.get("upscale"):
+        min_h = int(p.get("upscale_min_height", 800))
+        max_h = int(p.get("upscale_max_height", 2400))
+        factor = float(p.get("upscale_factor", 2.0))
+        cur_h, cur_w = img.shape[:2]
+        if cur_h < min_h:
+            actual_factor = min(factor, max_h / cur_h)
+            new_w = int(cur_w * actual_factor)
+            new_h = int(cur_h * actual_factor)
+            img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            meta["steps"].append(f"upscale_x{actual_factor:.1f}")
+
+    # 5. 自适应二值化 (可选, 默认关)
+    if p.get("binarize"):
+        block = int(p.get("binarize_block", 11))
+        c = int(p.get("binarize_c", 2))
+        if img.ndim == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
+        img = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, block, c
+        )
+        meta["steps"].append("binarize")
+
+    # 输出
+    h2, w2 = img.shape[:2]
+    meta["size_after"] = f"{w2}x{h2}"
+
+    if not meta["steps"]:
+        return image_path, meta
+
+    suffix = Path(image_path).suffix.lower()
+    out_suffix = suffix if suffix in ('.png', '.bmp', '.tiff') else '.png'
+    uid = uuid.uuid4().hex[:8]
+    tmp = Path(tempfile.gettempdir()) / f"visionocr_pp_{uid}{out_suffix}"
+    cv2.imwrite(str(tmp), img)
+    meta["output"] = str(tmp)
+    return str(tmp), meta
+
+
+def check_image_quality(image_path: str) -> dict:
+    """图像质量预检: 模糊/过曝/全黑检测。
 
     Returns:
-        预处理后的 BGR 图像
+        {"blur": bool, "blur_score": float, "exposure": str,
+         "ok": bool, "warning": str}
     """
-    if cv2 is None or image is None:
-        return image
-
-    # 确保 3 通道
-    if image.ndim == 2:
-        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-
-    img = image.copy()
-
-    # 1. 暗色/反转检测
-    if do_enhance:
-        img = _fix_inverted(img)
-
-    # 2. 对比度增强 (CLAHE)
-    if do_enhance:
-        img = _enhance_contrast(img)
-
-    # 3. 降噪
-    if do_denoise:
-        img = _denoise(img)
-
-    # 4. 纠偏
-    if do_deskew:
-        img = _deskew(img)
-
-    # 5. 自适应放大 (小图/截图)
-    if do_upscale:
-        img = _adaptive_upscale(img)
-
-    # 6. 背景归一化 (光照不均/泛黄)
-    if do_enhance:
-        img = _normalize_background(img)
-
-    return img
-
-
-def preprocess_file(image_path: str, output_path: str | None = None, **kwargs) -> str:
-    """读取图像文件 → 预处理 → 保存, 返回输出路径。
-
-    若 output_path 为 None, 覆盖原文件。
-    """
-    if cv2 is None:
-        return image_path
-    img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+    img = cv2.imread(image_path)
     if img is None:
-        return image_path
-    result = preprocess_image(img, **kwargs)
-    out = output_path or image_path
-    cv2.imwrite(out, result)
-    return out
+        return {"blur": False, "blur_score": 0, "exposure": "unreadable",
+                "ok": False, "warning": "无法读取图像文件"}
 
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
 
-# ─── 内部实现 ────────────────────────────────────────────────
-
-def _fix_inverted(img: np.ndarray) -> np.ndarray:
-    """检测暗色背景 (白字黑底) 并反色。"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    mean_val = gray.mean()
-    # 暗色背景: 均值低 + 高亮像素占比少
-    if mean_val < _DARK_BG_MEAN:
-        bright_ratio = (gray > 200).sum() / gray.size
-        if bright_ratio < 0.3:
-            img = cv2.bitwise_not(img)
-    return img
-
-
-def _enhance_contrast(img: np.ndarray) -> np.ndarray:
-    """CLAHE 自适应直方图均衡化 (仅对比度不足时触发)。"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    if gray.std() >= _LOW_CONTRAST_STD:
-        return img  # 对比度已足够
-    # 转 LAB, 对 L 通道做 CLAHE
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    lab = cv2.merge([l, a, b])
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-
-
-def _denoise(img: np.ndarray) -> np.ndarray:
-    """快速降噪 (仅高噪声图像触发)。
-
-    判据: Laplacian 方差高 (细节多/噪声多) + 灰度均值中等 (非纯文档)
-    """
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 模糊检测: Laplacian 方差
     lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-    # 高 Laplacian + 低对比度 → 可能是噪声而非文字
-    if lap_var > _NOISE_LAPLACIAN and gray.std() < _LOW_CONTRAST_STD:
-        img = cv2.fastNlMeansDenoisingColored(img, None, h=6, hForColorComponents=6,
-                                              templateWindowSize=7, searchWindowSize=21)
-    return img
+    is_blur = lap_var < 100
 
+    # 曝光检测: 均值
+    mean_val = gray.mean()
+    if mean_val < 20:
+        exposure = "underexposed"
+    elif mean_val > 240:
+        exposure = "overexposed"
+    else:
+        exposure = "normal"
 
-def _deskew(img: np.ndarray) -> np.ndarray:
-    """基于 Hough 变换的文档纠偏 (仅倾斜 > 0.5° 时触发)。"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # 边缘检测
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100,
-                            minLineLength=gray.shape[1] // 4, maxLineGap=10)
-    if lines is None or len(lines) < 3:
-        return img
+    # 综合判定
+    warnings = []
+    if is_blur:
+        warnings.append(f"图像模糊 (清晰度 {lap_var:.0f} < 100), 建议重拍")
+    if exposure == "underexposed":
+        warnings.append(f"图像过暗 (均值 {mean_val:.0f}), 建议增加光照")
+    elif exposure == "overexposed":
+        warnings.append(f"图像过曝 (均值 {mean_val:.0f}), 建议降低曝光")
 
-    # 统计主要角度
-    angles = []
-    for line in lines[:200]:
-        x1, y1, x2, y2 = line[0]
-        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-        # 只取接近水平的线 (文档行)
-        if abs(angle) < 45:
-            angles.append(angle)
-    if not angles:
-        return img
-
-    median_angle = np.median(angles)
-    if abs(median_angle) < _SKEW_ANGLE_THRESH:
-        return img  # 倾斜不显著
-
-    # 旋转纠偏
-    h, w = img.shape[:2]
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, median_angle, 1.0)
-    rotated = cv2.warpAffine(img, M, (w, h),
-                             flags=cv2.INTER_LINEAR,
-                             borderMode=cv2.BORDER_REPLICATE)
-    return rotated
-
-
-def _adaptive_upscale(img: np.ndarray) -> np.ndarray:
-    """小图/截图放大 (短边 < 1200px 时放大到目标尺寸)。"""
-    h, w = img.shape[:2]
-    short_side = min(h, w)
-    if short_side >= _MAX_DIM_FOR_UPSCALE:
-        return img  # 已足够大
-
-    # 计算放大倍率 (目标短边 1200px, 但不超过 _UPSCALE_MAX)
-    target = _MAX_DIM_FOR_UPSCALE
-    scale = min(target / short_side, _UPSCALE_MAX)
-    if scale < 1.2:
-        return img
-
-    new_w, new_h = int(w * scale), int(h * scale)
-    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
-
-
-def _normalize_background(img: np.ndarray) -> np.ndarray:
-    """背景归一化: 消除光照不均/泛黄 (大核高斯背景估计 + 差分)。"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # 如果背景已经很均匀 (std 低), 跳过
-    if gray.std() < 30:
-        return img
-    # 估计背景 (大核模糊)
-    bg = cv2.GaussianBlur(gray, (51, 51), 0)
-    # 归一化: 原图 / 背景 * 255
-    norm = cv2.divide(gray, bg, scale=255)
-    # 如果归一化后对比度提升, 用归一化结果替换灰度
-    if norm.std() > gray.std():
-        # 保持彩色信息: 用归一化灰度 + 原始色度
-        img_norm = cv2.cvtColor(norm, cv2.COLOR_GRAY2BGR)
-        return img_norm
-    return img
+    return {
+        "blur": is_blur,
+        "blur_score": round(lap_var, 1),
+        "exposure": exposure,
+        "ok": len(warnings) == 0,
+        "warning": "; ".join(warnings),
+    }

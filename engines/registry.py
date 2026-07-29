@@ -100,11 +100,13 @@ class EngineRegistry:
         engine = self._engines.get(name)
         if engine is None:
             raise KeyError(f"Engine '{name}' not registered")
-        if engine.is_ready():
-            self._touch(name)
-            return engine
 
         with self._lock:
+            # 双重检查: 锁内再次确认状态 (防止并发重复加载)
+            if engine.is_ready():
+                self._touch(name)
+                return engine
+
             needed = engine.meta.vram_gb
             # 驱逐直到有足够空间
             while self._used_vram() + needed > self.max_budget_gb and self._lru:

@@ -225,6 +225,18 @@ _MIGRATIONS = {
     "payments": [
         ("source", "ALTER TABLE payments ADD COLUMN source TEXT DEFAULT 'regex'"),
     ],
+    "ocr_results": [
+        ("image_hash", "ALTER TABLE ocr_results ADD COLUMN image_hash TEXT"),
+        ("scene", "ALTER TABLE ocr_results ADD COLUMN scene TEXT"),
+        ("roi_count", "ALTER TABLE ocr_results ADD COLUMN roi_count INTEGER DEFAULT 1"),
+        ("raw_text", "ALTER TABLE ocr_results ADD COLUMN raw_text TEXT"),
+        ("corrected_text", "ALTER TABLE ocr_results ADD COLUMN corrected_text TEXT"),
+        ("confidence_threshold", "ALTER TABLE ocr_results ADD COLUMN confidence_threshold REAL DEFAULT 0.75"),
+        ("verdict", "ALTER TABLE ocr_results ADD COLUMN verdict TEXT DEFAULT 'OK'"),
+        ("ng_regions", "ALTER TABLE ocr_results ADD COLUMN ng_regions TEXT"),
+        ("corrections", "ALTER TABLE ocr_results ADD COLUMN corrections TEXT"),
+        ("elapsed_sec", "ALTER TABLE ocr_results ADD COLUMN elapsed_sec REAL"),
+    ],
 }
 
 
@@ -274,3 +286,49 @@ def get_conn(data_dir: str) -> sqlite3.Connection:
         conn.executescript(_SCHEMA_INDEXES)  # 索引须在补列后创建
         _initialized_dbs.add(db_str)
     return conn
+
+
+def log_ocr_audit(data_dir: str, record: dict) -> None:
+    """将 OCR 识别结果写入审计日志 (生产追溯)。
+
+    Args:
+        data_dir: 数据目录 (含 visionocr.db)
+        record: {
+            image_path, image_hash, engine, scene, roi_count,
+            raw_text, corrected_text, confidence, confidence_threshold,
+            verdict, ng_regions (list), corrections (list), elapsed_sec
+        }
+    """
+    import json
+    try:
+        conn = get_conn(data_dir)
+        conn.execute(
+            """INSERT INTO ocr_results
+               (image_path, image_hash, engine, scene, roi_count,
+                raw_text, corrected_text, text_content, confidence,
+                confidence_threshold, verdict, ng_regions, corrections,
+                elapsed_sec, structured_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                record.get("image_path", ""),
+                record.get("image_hash", ""),
+                record.get("engine", ""),
+                record.get("scene", ""),
+                record.get("roi_count", 1),
+                record.get("raw_text", ""),
+                record.get("corrected_text", ""),
+                record.get("corrected_text", ""),  # text_content 兼容旧字段
+                record.get("confidence", 0.0),
+                record.get("confidence_threshold", 0.75),
+                record.get("verdict", "OK"),
+                json.dumps(record.get("ng_regions", []), ensure_ascii=False),
+                json.dumps(record.get("corrections", []), ensure_ascii=False),
+                record.get("elapsed_sec", 0.0),
+                record.get("structured_json", "{}"),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # 审计日志写入失败不应阻断主流程
+        print(f"[AuditLog] 写入失败 (不影响识别): {e}")

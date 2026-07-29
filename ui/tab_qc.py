@@ -45,9 +45,10 @@ def _get_config() -> dict:
 def create_tab_qc(config: dict, registry):
     set_registry(registry)
 
+    # ═══ 单行双列: 左=输入/配置, 右=输出/结果 ═══════════════════
     with gr.Row():
-        # ─── 左栏: 输入 + 配置 ─────────────────────────────
-        with gr.Column(scale=1):
+        # ─── 左列: 图像输入 + 全部配置 ─────────────────────
+        with gr.Column(scale=2):
             gr.Markdown("### 图像输入")
             image_source = gr.Radio(
                 choices=["上传图像", "2D彩色相机", "3D深度相机 (Sizector)"],
@@ -57,7 +58,7 @@ def create_tab_qc(config: dict, registry):
             qc_image = gr.Image(label="拍照 / 上传待检图像", type="filepath")
             depth_preview = gr.Image(
                 label="3D 深度图预览 (伪彩, 仅深度相机)",
-                visible=False, height=200,
+                visible=False, height=180,
             )
             with gr.Row():
                 camera_btn = gr.Button("📷 相机采集", scale=1)
@@ -70,9 +71,7 @@ def create_tab_qc(config: dict, registry):
                 value="零样本 (Grounding DINO)",
                 label="检测模式",
             )
-
             gr.Markdown("### 检测配置")
-
             recipe_choice = gr.Dropdown(
                 label="产品配方 (快速切换)",
                 choices=["(自定义)"] + list_recipes(),
@@ -133,26 +132,28 @@ def create_tab_qc(config: dict, registry):
             pc_register_btn = gr.Button("📦 注册建库", variant="secondary")
             pc_status = gr.Markdown("")
 
-        # ─── 右栏: 结果展示 ─────────────────────────────────
-        with gr.Column(scale=2):
+        # ─── 右列: 全部输出/结果 ─────────────────────────────
+        with gr.Column(scale=3):
             gr.Markdown("### 检测结果")
-            result_image = gr.Image(label="标注结果 (红框=缺陷)", height=450)
+            result_image = gr.Image(label="标注结果 (红框=缺陷)", height=420)
             with gr.Row():
                 verdict_box = gr.Textbox(
-                    label="判定", scale=1,
-                    interactive=False,
-                )
+                    label="判定", scale=1, interactive=False)
                 score_box = gr.Textbox(
                     label="最高置信度", scale=1, interactive=False)
                 count_box = gr.Textbox(
                     label="缺陷数", scale=1, interactive=False)
-
             detail_table = gr.Dataframe(
                 headers=["#", "缺陷类型", "置信度", "位置 (x1,y1,x2,y2)"],
                 label="检测明细 (编号对应图上标注)",
                 wrap=True,
             )
             status_msg = gr.Markdown("")
+            log_box = gr.Textbox(
+                label="运行日志 (进度 / 报错)",
+                lines=8, max_lines=15, interactive=False,
+                elem_classes=["log-panel"],
+            )
 
     # ─── 事件绑定 ────────────────────────────────────────────
     detect_btn.click(
@@ -160,7 +161,7 @@ def create_tab_qc(config: dict, registry):
         inputs=[qc_image, prompt_input, threshold_slider, detect_mode, pc_product,
                 fusion_enable, depth_threshold, fusion_mode_radio],
         outputs=[result_image, verdict_box, score_box, count_box,
-                 detail_table, status_msg],
+                 detail_table, status_msg, log_box],
     )
     camera_btn.click(
         fn=_camera_capture,
@@ -197,31 +198,47 @@ def create_tab_qc(config: dict, registry):
 # ─── 回调函数 ────────────────────────────────────────────────
 def _run_detect(image_path, prompt, threshold, mode, pc_product,
                 fusion_enable=False, depth_threshold=0.5, fusion_mode="OR (高召回, 推荐)"):
-    """一键检测: 根据模式调用 Grounding DINO / PatchCore / 3D 深度融合。"""
+    """一键检测 (Generator): 流式输出进度日志 + 最终结果。"""
+    import time as _time
+    logs = []
+
+    def log(msg):
+        logs.append(f"[{_time.strftime('%H:%M:%S')}] {msg}")
+        return "\n".join(logs)
+
+    _EMPTY = (None, "—", "—", "—", [], "", "")
+
     if not image_path:
-        return (None, "—", "—", "—", [],
-                "⚠ 请先上传图片或使用相机采集。")
+        yield (None, "—", "—", "—", [],
+               "⚠ 请先上传图片或使用相机采集。", log("⚠ 无输入图像"))
+        return
 
     registry = _registry
     if registry is None:
-        return (None, "ERROR", "—", "—", [],
-                "⚠ 引擎未初始化, 请重启应用。")
+        yield (None, "ERROR", "—", "—", [],
+               "⚠ 引擎未初始化, 请重启应用。", log("✗ Registry 为 None"))
+        return
 
-    # ─── 3D 深度融合模式 (深度相机已采集 + 开关开启) ─────────
+    # ─── 3D 深度融合模式 ─────────────────────────────────────
     global _last_depth_frame
     if fusion_enable and _last_depth_frame is not None and "PatchCore" not in (mode or ""):
-        return _run_fusion_detect(registry, image_path, prompt, threshold,
-                                  depth_threshold, fusion_mode)
+        yield _EMPTY[:6] + (log("▶ 3D 深度融合检测启动..."),)
+        result = _run_fusion_detect(registry, image_path, prompt, threshold,
+                                    depth_threshold, fusion_mode)
+        yield result[:6] + (log(f"✓ 融合检测完成 · {result[5]}"),)
+        return
 
     # ─── PatchCore 少样本模式 ─────────────────────────────
     if "PatchCore" in (mode or ""):
+        yield _EMPTY[:6] + (log("▶ PatchCore 少样本检测..."),)
         product = "" if pc_product == "(新建)" else (pc_product or "")
         result = run_anomaly_detection(registry, image_path,
                                        product_name=product,
                                        threshold=threshold)
         if result.get("error"):
-            return (None, "ERROR", "—", "—", [],
-                    f"⚠ {result['error']}")
+            yield (None, "ERROR", "—", "—", [],
+                   f"⚠ {result['error']}", log(f"✗ {result['error']}"))
+            return
 
         verdict = result["pred_label"]
         score = result.get("score", 0)
@@ -234,28 +251,56 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
         table = [["1", "异常热力图", f"{score:.4f}", "见标注图"]]
         status = f"PatchCore 检测 · 产品: {product or '默认'} · 阈值: {threshold}"
-        return (overlay, verdict_str, f"{score:.4f}", "1" if verdict == "NG" else "0",
-                table, status)
+        yield (overlay, verdict_str, f"{score:.4f}", "1" if verdict == "NG" else "0",
+               table, status, log(f"✓ {verdict_str}"))
+        return
 
     # ─── Grounding DINO 零样本模式 (默认) ─────────────────
-    result = run_detection(registry, image_path, prompt=prompt,
-                           threshold=threshold)
+    # 检查模型是否已加载, 给出下载提示
+    engine = registry.get("grounding_dino")
+    if engine is None:
+        yield (None, "ERROR", "—", "—", [],
+               "⚠ Grounding DINO 引擎未注册", log("✗ 引擎未注册"))
+        return
+
+    if not engine.is_ready():
+        yield _EMPTY[:6] + (
+            log("▶ 首次加载 Grounding DINO 模型...\n"
+                "  (首次需从 HuggingFace 下载 ~2.5GB 权重, 请耐心等待;\n"
+                "   若网络不通, 日志将显示超时错误。后续启动为离线加载, 仅需数秒)"),)
+        try:
+            registry.ensure_loaded("grounding_dino")
+        except Exception as e:
+            yield (None, "ERROR", "—", "—", [],
+                   f"⚠ 模型加载失败: {e}",
+                   log(f"✗ 模型加载失败: {e}\n"
+                       "  排查: 1) 检查网络能否访问 huggingface.co\n"
+                       "  2) 或设置 HF_ENDPOINT=https://hf-mirror.com\n"
+                       "  3) 或手动下载模型到 models/ 目录"))
+            return
+        if not engine.is_ready():
+            yield (None, "ERROR", "—", "—", [],
+                   "⚠ 模型加载后仍未就绪", log("✗ 模型状态异常"))
+            return
+        yield _EMPTY[:6] + (log("✓ 模型加载完成"),)
+
+    yield _EMPTY[:6] + (log(f"▶ 推理中 (提示词: {prompt[:40]}..., 阈值: {threshold})..."),)
+    result = run_detection(registry, image_path, prompt=prompt, threshold=threshold)
 
     if result.get("error"):
-        return (result.get("image"), f"ERROR", "—", "—", [],
-                f"⚠ {result['error']}")
+        yield (result.get("image"), "ERROR", "—", "—", [],
+               f"⚠ {result['error']}", log(f"✗ 检测失败: {result['error']}"))
+        return
 
     verdict = result["verdict"]
     max_score = result["max_score"]
     count = result["count"]
 
-    # 判定显示
     if verdict == "OK":
         verdict_str = "✓ OK (合格)"
     else:
         verdict_str = f"✗ NG (不合格 · {count}处缺陷)"
 
-    # 明细表
     table = []
     for idx, det in enumerate(result["detections"], 1):
         box = det["box"]
@@ -274,11 +319,12 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
                        max_score, prompt)
         conn.close()
     except Exception:
-        pass  # 落库失败不阻断检测
+        pass
 
     status = f"检测完成 · 提示词: {prompt[:60]}... · 阈值: {threshold}"
-    return (result["image"], verdict_str, f"{max_score:.2%}",
-            str(count), table, status)
+    yield (result["image"], verdict_str, f"{max_score:.2%}",
+           str(count), table, status,
+           log(f"✓ {verdict_str} · 最高置信度 {max_score:.2%} · {count} 处"))
 
 
 def _camera_capture(image_source):

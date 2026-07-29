@@ -13,8 +13,6 @@ from engines.base import BaseEngine, EngineMeta, EngineState
 # 候选模型 ID (腾讯混元 OCR 尚未稳定上架, 做多候选兼容)
 _HF_CANDIDATES = [
     "tencent/HunyuanOCR",
-    "tencent/Hunyuan-OCR",
-    "Tencent-Hunyuan/HunyuanOCR",
 ]
 _LOCAL_DIR_NAMES = ["hunyuan-ocr", "HunyuanOCR", "hunyuan_ocr"]
 
@@ -50,13 +48,22 @@ class HunyuanOCREngine(BaseEngine):
             from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore  # noqa: F401
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[HunyuanOCR] 依赖缺失: 请执行 `pip install transformers torch pillow` "
-                f"后重试。原始错误: {e}"
-            )
+            err_msg = str(e)
+            if "DLL load failed" in err_msg:
+                print(
+                    "[HunyuanOCR] DLL 加载失败 (非包缺失): 通常是 CUDA/cuDNN 版本冲突。\n"
+                    "  修复: pip install torch --force-reinstall --index-url "
+                    "https://download.pytorch.org/whl/cu126\n"
+                    f"  原始错误: {e}"
+                )
+            else:
+                print(
+                    "[HunyuanOCR] 依赖缺失: 请执行 `pip install transformers torch pillow` "
+                    f"后重试。原始错误: {e}"
+                )
             return
 
-        # 2) 显存检查: 需要独占 ~12GB
+        # 2) 显存检查: 需要独占 ~12GB, 不足则硬性拦截 (避免必然 OOM)
         if not torch.cuda.is_available():
             self.state = EngineState.ERROR
             print("[HunyuanOCR] 需要 CUDA GPU (约 12GB 显存), 当前无可用 GPU。")
@@ -64,10 +71,13 @@ class HunyuanOCREngine(BaseEngine):
         try:
             free_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
             if free_gb < self.meta.vram_gb * 0.9:
+                self.state = EngineState.ERROR
                 print(
-                    f"[HunyuanOCR] 警告: 可用显存 {free_gb:.1f}GB "
-                    f"< 需求 {self.meta.vram_gb}GB, 可能 OOM。"
+                    f"[HunyuanOCR] 显存不足: 可用 {free_gb:.1f}GB < 需求 {self.meta.vram_gb}GB。\n"
+                    f"  该模型需要 24GB+ 显卡 (如 RTX 4090/A5000)。\n"
+                    f"  当前硬件建议: 手写体场景用 PaddleOCR-VL 或 rapidocr+CLAHE 替代。"
                 )
+                return
         except Exception:  # noqa: BLE001
             pass
 

@@ -1,6 +1,36 @@
+# ─── Python ───────────────────────────────────────────────────
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# ─── 模型权重 & 数据 (体积大, 不入库) ─────────────────────────
 models/
 data/
 *.db
-.venv/
+*.db-wal
+*.db-shm
+finetune/data/
+
+# ─── 导出 & 临时文件 ──────────────────────────────────────────
+exports/
+*.tmp
+*.bak
+*.log
+
+# ─── IDE & OS ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ─── 环境 & 密钥 ──────────────────────────────────────────────
+.env
+*.key
+credentials.json

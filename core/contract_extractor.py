@@ -204,9 +204,13 @@ def _company_names(company: dict) -> list[str]:
 
 
 def _split_parties(parties: str) -> tuple[str, str]:
-    """从 '甲方：X，乙方：Y' 类字符串拆出双方。"""
-    a = re.search(r"甲方[:：]?\s*([^，,；;。\n]+)", parties)
-    b = re.search(r"乙方[:：]?\s*([^，,；;。\n]+)", parties)
+    """从 '甲方（买方）：X，乙方（卖方）：Y' 类字符串拆出双方。
+
+    兼容: 甲方：X / 甲方(买方)：X / 甲方（买方）X 等变体。
+    """
+    # 跳过角色括号 (买方)/(卖方)/(委托方) 等 + 可选冒号
+    a = re.search(r"甲方\s*(?:[（(][^）)]*[）)])?\s*[:：]?\s*([^，,；;。\n]+)", parties)
+    b = re.search(r"乙方\s*(?:[（(][^）)]*[）)])?\s*[:：]?\s*([^，,；;。\n]+)", parties)
     return (a.group(1).strip() if a else "", b.group(1).strip() if b else "")
 
 
@@ -272,8 +276,51 @@ def _assess_confidence(method: str, payments: list[dict], total_amount,
 
 
 # ─── LLM 路径 ────────────────────────────────────────────────
+_PAYMENT_KEYWORDS = (
+    "付款", "支付", "价款", "结算", "收款", "汇款", "转账",
+    "违约", "罚则", "滞纳金", "逾期", "赔偿",
+    "验收", "交付", "质保", "保证金", "预付", "尾款",
+    "金额", "费用", "报价", "单价", "总价",
+)
+
+
+def _smart_truncate(text: str, max_chars: int = 12000) -> str:
+    """段落感知截断: 保留头部 + 付款/违约段落 + 尾部签章。
+
+    策略: 头 3000 字 + 中间含关键词段落 (至多 7000 字) + 尾 2000 字
+    """
+    if len(text) <= max_chars:
+        return text
+
+    head_size = 3000
+    tail_size = 2000
+    budget = max_chars - head_size - tail_size
+
+    head = text[:head_size]
+    tail = text[-tail_size:]
+    middle = text[head_size:-tail_size]
+
+    # 从中间段落中筛选含付款/违约关键词的段落
+    paragraphs = middle.split("\n")
+    selected = []
+    used = 0
+    for para in paragraphs:
+        if used >= budget:
+            break
+        if any(kw in para for kw in _PAYMENT_KEYWORDS):
+            selected.append(para)
+            used += len(para) + 1
+
+    # 如果关键词段落不足, 补充中间原文
+    if used < budget * 0.5:
+        remaining = budget - used
+        selected.append(middle[:remaining])
+
+    return head + "\n[...]\n" + "\n".join(selected) + "\n[...]\n" + tail
+
+
 def _llm_extract(text: str, llm: Any, base_date: date) -> Optional[dict]:
-    snippet = text[:12000]
+    snippet = _smart_truncate(text)
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user",
@@ -384,7 +431,33 @@ _PENALTY_KEYS = ("违约金", "滞纳金", "逾期付款", "罚息", "按未付"
 _TOTAL_KEYS = ("合同总价", "合同金额", "合同总额", "总金额", "总价款", "合同价款")
 
 
+_ROLE_RE = re.compile(
+    r"(甲方|乙方|发包方|承包方|买方|卖方|委托方|受托方|供方|需方)"
+    r"向\s*"
+    r"(甲方|乙方|发包方|承包方|买方|卖方|委托方|受托方|供方|需方)"
+)
+_CONTRACT_NO_RE = re.compile(
+    r"(?:合同|协议|编号|编码|号码)\s*(?:编号|编码|号码)?\s*[:：]\s*"
+    r"([A-Za-z0-9\-/]{4,40})", re.IGNORECASE
+)
+_SIGNER_RE = re.compile(
+    r"(?:甲方代表|乙方代表|委托代理人|负责人|签署人|签字人)\s*[:：]\s*"
+    r"([\u4e00-\u9fa5A-Za-z]{2,10})"
+)
+
+
 def _regex_extract(text: str, base_date: date) -> dict:
+    # ── 先提取主体, 用于后续 payer/payee 解析 ──
+    party_a, party_b = _split_parties(text[:800])
+    # 角色 → 实际名称映射 (甲方→party_a, 乙方→party_b, 买方→party_a 等)
+    _ROLE_MAP = {
+        "甲方": party_a, "乙方": party_b,
+        "发包方": party_a, "承包方": party_b,
+        "买方": party_a, "卖方": party_b,
+        "委托方": party_a, "受托方": party_b,
+        "供方": party_b, "需方": party_a,
+    }
+
     payments: list[dict] = []
     penalty_text = ""
     total_amount = None
@@ -414,17 +487,21 @@ def _regex_extract(text: str, base_date: date) -> dict:
             m_rel = _REL_DATE_RE.search(seg)
             if m_rel:
                 anchor = m_rel.group(1) or ""
-                # H2 修复: 仅当锚点可解析为 base_date 时才计算绝对日期
-                # 签订/签署/生效 ≈ 合同签署日 (base_date 近似)
-                # 验收/交付/开票/到货/质保期满 → 未来事件, 日期未知, 留空
                 _RESOLVABLE_ANCHORS = ("签订", "签署", "生效")
                 if anchor in _RESOLVABLE_ANCHORS:
                     due = (base_date + timedelta(days=int(m_rel.group(2)))).isoformat()
-                # else: due 留空, 相对描述保留在 condition_text 中
         cond = _ORDINAL_RE.sub("", seg)[:120]
+
+        # ── 从 "X方向Y方" 解析收付方, 映射到实际主体名称 ──
+        payer, payee = "", ""
+        m_role = _ROLE_RE.search(seg)
+        if m_role:
+            payer = _ROLE_MAP.get(m_role.group(1), m_role.group(1))
+            payee = _ROLE_MAP.get(m_role.group(2), m_role.group(2))
+
         payments.append({
             "due_date": due, "amount": amt, "currency": "CNY",
-            "condition_text": cond, "penalty": "", "payer": "", "payee": "",
+            "condition_text": cond, "penalty": "", "payer": payer, "payee": payee,
             "method": "regex",
         })
 
@@ -432,13 +509,59 @@ def _regex_extract(text: str, base_date: date) -> dict:
         for p in payments:
             p["penalty"] = penalty_text
 
+    # ── 合同编号 (独立于标题) ──
+    contract_no = ""
+    m_no = _CONTRACT_NO_RE.search(text[:600])
+    if m_no:
+        contract_no = m_no.group(1).strip()
+
+    # ── 标题 (排除编号行) ──
+    title = ""
     title_m = re.search(r"(?:合同|协议)[名称]*[:：]?\s*([^\n]{4,40})", text[:500])
-    party_a, party_b = _split_parties(text[:800])
+    if title_m:
+        candidate = title_m.group(1).strip()
+        # 排除: 纯编号 / 包含已提取编号 / 以"编号"开头
+        is_no = (candidate == contract_no
+                 or re.match(r"^[A-Za-z0-9\-/]+$", candidate)
+                 or (contract_no and contract_no in candidate)
+                 or candidate.startswith("编号"))
+        if not is_no:
+            title = candidate
+
+    # ── 日期 ──
+    start_date, end_date = "", ""
+    m_start = re.search(r"(?:签订|签署|生效|起始|开始)\s*(?:日期|时间)?\s*[:：]?\s*"
+                        r"(\d{4})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})", text[:800])
+    if m_start:
+        start_date = _safe_date(int(m_start.group(1)), int(m_start.group(2)), int(m_start.group(3)))
+    m_end = re.search(r"(?:截止|届满|终止|结束)\s*(?:日期|时间)?\s*[:：]?\s*"
+                      r"(\d{4})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})", text[:1200])
+    if m_end:
+        end_date = _safe_date(int(m_end.group(1)), int(m_end.group(2)), int(m_end.group(3)))
+    # 兜底: "X至Y" 格式 (兼容 "2026年7月15日至2027年7月14日")
+    if not start_date or not end_date:
+        m_range = re.search(r"(\d{4})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})\s*日?"
+                            r"\s*[至到—\-]+\s*"
+                            r"(\d{4})\s*[-年/.]\s*(\d{1,2})\s*[-月/.]\s*(\d{1,2})", text[:1200])
+        if m_range:
+            if not start_date:
+                start_date = _safe_date(int(m_range.group(1)), int(m_range.group(2)), int(m_range.group(3)))
+            if not end_date:
+                end_date = _safe_date(int(m_range.group(4)), int(m_range.group(5)), int(m_range.group(6)))
+
+    # ── 签单人 ──
+    signer = ""
+    m_signer = _SIGNER_RE.search(text)
+    if m_signer:
+        signer = m_signer.group(1).strip()
+
     return {
-        "contract_no": "",
-        "title": title_m.group(1).strip() if title_m else "",
+        "contract_no": contract_no,
+        "title": title,
         "party_a": party_a, "party_b": party_b,
-        "signer": "",
+        "signer": signer,
+        "start_date": start_date,
+        "end_date": end_date,
         "total_amount": total_amount,
         "payments": payments,
     }
