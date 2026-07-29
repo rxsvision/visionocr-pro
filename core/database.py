@@ -188,8 +188,12 @@ CREATE TABLE IF NOT EXISTS behavior_events (
     confidence REAL,
     detail_json TEXT
 );
+"""
 
--- 性能索引 (Phase 3F 审查后补充)
+# 性能索引 (Phase 3F 审查后补充)
+# 注意: 索引引用的列 (如 contracts.signer/reviewed) 在旧库中可能尚未存在,
+# 必须在 _migrate 补齐列之后再创建, 否则 init_db 会因 "no such column" 崩溃。
+_SCHEMA_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_receivables_contract ON receivables(contract_id);
 CREATE INDEX IF NOT EXISTS idx_receivables_status ON receivables(status);
 CREATE INDEX IF NOT EXISTS idx_collections_contract ON collections(contract_id);
@@ -242,6 +246,7 @@ def init_db(data_dir: str) -> Path:
     conn = sqlite3.connect(str(db_path))
     conn.executescript(_SCHEMA)
     _migrate(conn)
+    conn.executescript(_SCHEMA_INDEXES)  # 索引须在补列后创建
     conn.close()
     return db_path
 
@@ -266,5 +271,6 @@ def get_conn(data_dir: str) -> sqlite3.Connection:
     if is_new:
         conn.executescript(_SCHEMA)
         _migrate(conn)
+        conn.executescript(_SCHEMA_INDEXES)  # 索引须在补列后创建
         _initialized_dbs.add(db_str)
     return conn

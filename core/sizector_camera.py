@@ -99,6 +99,7 @@ class DepthFrame:
         if hi - lo < 1e-6:
             hi = lo + 1e-6
         norm = np.clip((d - lo) / (hi - lo), 0, 1)
+        norm[~valid] = 0.0  # NaN → 0, 避免 cast 警告; 无效点后续涂黑
         norm_u8 = (norm * 255).astype(np.uint8)
         color = cv2.applyColorMap(norm_u8, cv2.COLORMAP_JET)
         color[~valid] = 0  # 无效点黑色
@@ -349,27 +350,36 @@ class SizectorCamera:
         mp = self._mp
         s = self._sensor
 
-        # 通过引用参数返回 DataFormat 与未托管帧数据
-        fmt_box = mp.DataFormatType.FixZMapSimple
-        um_box = mp.UnmanagedDataFrameUndefinedStruct()
-
+        # pythonnet 约定: .NET 的 out 参数不作为输入传递, 而是随返回值
+        # 以元组 (返回值, out1, out2, ...) 形式返回。
+        # SnapUnmanaged(bool SoftwareTrigger, out DataFormatType DataFormat,
+        #               out UnmanagedDataFrameUndefinedStruct Data, uint TimeOutMS)
+        # -> 返回 (bool ok, DataFormatType fmt, UnmanagedDataFrameUndefinedStruct data)
         try:
-            ok = s.SnapUnmanaged(True, fmt_box, um_box, self.timeout_ms)
+            result = s.SnapUnmanaged(True, self.timeout_ms)
         except Exception as e:  # noqa: BLE001
             logger.error("SnapUnmanaged 调用异常: %s", e)
             return None
 
-        if not ok:
-            logger.error("Sizector 采集失败 (SnapUnmanaged 返回 false), "
-                         "请检查曝光/工作距离/触发设置")
+        # 兼容处理: 新版 pythonnet 返回元组; 极少数旧版可能仅返回 bool
+        if isinstance(result, tuple):
+            ok = bool(result[0])
+            um_frame = result[2] if len(result) > 2 else None
+        else:
+            ok = bool(result)
+            um_frame = None
+
+        if not ok or um_frame is None:
+            logger.error("Sizector 采集失败 (SnapUnmanaged ok=%s), "
+                         "请检查曝光/工作距离/触发设置", ok)
             return None
 
         try:
-            return self._convert_frame(um_box)
+            return self._convert_frame(um_frame)
         finally:
             # 无论成功失败都必须释放非托管内存, 否则泄漏
             try:
-                self._utils.FreeUnmanagedData(um_box)
+                self._utils.FreeUnmanagedData(um_frame)
             except Exception as e:  # noqa: BLE001
                 logger.debug("释放非托管帧失败 (可忽略): %s", e)
 
