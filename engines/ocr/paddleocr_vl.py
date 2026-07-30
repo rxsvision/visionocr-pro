@@ -41,17 +41,17 @@ class PaddleOCRVLEngine(BaseEngine):
 
     # ─── 生命周期 ────────────────────────────────────────────
     def load(self) -> None:
-        """优先加载 PaddleOCR (GPU); 失败则降级 RapidOCR"""
+        """优先加载 PaddleOCR (GPU); DLL 冲突时走子进程; 最终降级 RapidOCR"""
         self.state = EngineState.LOADING
         device = (self.config or {}).get("device", "auto")
         use_gpu = self._should_use_gpu(device)
+        self._use_gpu = use_gpu
 
-        # 1) 尝试 PaddleOCR 3.x
+        # 1) 尝试直接导入 PaddleOCR 3.x
         try:
             from paddleocr import PaddleOCR  # type: ignore
 
             ocr_cfg = (self.config or {}).get("ocr", {}).get("paddleocr", {})
-            # VL 模式关键参数: 方向分类 + 去扭曲
             kwargs = dict(
                 use_doc_orientation_classify=ocr_cfg.get(
                     "use_doc_orientation_classify", True
@@ -62,21 +62,38 @@ class PaddleOCRVLEngine(BaseEngine):
                 ),
                 device="gpu" if use_gpu else "cpu",
             )
-            # 兼容用户自定义 lang
             if "lang" in ocr_cfg:
                 kwargs["lang"] = ocr_cfg["lang"]
 
             self._model = PaddleOCR(**kwargs)
             self._backend = "paddleocr"
             self.state = EngineState.READY
-            logger.info("加载完成 (device=%s)", "gpu" if use_gpu else "cpu")
+            logger.info("加载完成 (device=%s, 直接导入)", "gpu" if use_gpu else "cpu")
             return
         except ImportError:
-            logger.warning("paddleocr 未安装, 尝试降级到 RapidOCR")
+            logger.warning("paddleocr 未安装, 尝试子进程模式")
+        except OSError as e:
+            # torch + paddle cudnn DLL 冲突 (WinError 127)
+            logger.warning("DLL 冲突 (%s), 切换子进程隔离模式", e)
+            self._backend = "subprocess"
+            self.state = EngineState.READY
+            logger.info("加载完成 (device=%s, 子进程隔离)", "gpu" if use_gpu else "cpu")
+            return
         except Exception as e:  # noqa: BLE001
-            logger.warning("PaddleOCR 初始化失败 (%s), 尝试降级到 RapidOCR", e)
+            logger.warning("PaddleOCR 初始化失败 (%s), 尝试子进程模式", e)
+            self._backend = "subprocess"
+            self.state = EngineState.READY
+            return
 
-        # 2) 降级: RapidOCR
+        # 2) 子进程模式 (worker 脚本存在即可)
+        worker = self._worker_path()
+        if worker.exists():
+            self._backend = "subprocess"
+            self.state = EngineState.READY
+            logger.info("加载完成 (子进程隔离, worker=%s)", worker.name)
+            return
+
+        # 3) 最终降级: RapidOCR
         try:
             from rapidocr_onnxruntime import RapidOCR  # type: ignore
 
@@ -109,7 +126,57 @@ class PaddleOCRVLEngine(BaseEngine):
 
         if self._backend == "paddleocr":
             return self._infer_paddle(image_path)
+        if self._backend == "subprocess":
+            return self._infer_subprocess(image_path)
         return self._infer_rapid_fallback(image_path)
+
+    # ─── 子进程隔离推理 ─────────────────────────────────────
+    @staticmethod
+    def _worker_path():
+        from pathlib import Path
+        return Path(__file__).parent / "_paddle_worker.py"
+
+    def _infer_subprocess(self, image_path: str) -> dict:
+        """通过子进程调用 PaddleOCR, 规避 torch cudnn DLL 冲突"""
+        import subprocess
+        import sys
+        import json
+
+        worker = self._worker_path()
+        if not worker.exists():
+            return self._empty(f"Worker 脚本缺失: {worker}")
+
+        device = "gpu" if getattr(self, "_use_gpu", False) else "cpu"
+        cmd = [
+            sys.executable, str(worker), image_path,
+            "--device", device,
+        ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, timeout=120,
+            )
+            stdout = proc.stdout.decode("utf-8", errors="replace").strip()
+
+            if proc.returncode != 0:
+                try:
+                    err_data = json.loads(stdout)
+                    return self._empty(err_data.get("error", "unknown"))
+                except (json.JSONDecodeError, ValueError):
+                    stderr = proc.stderr.decode("utf-8", errors="replace")[:200]
+                    return self._empty(
+                        f"子进程失败 (rc={proc.returncode}): {stderr}")
+
+            result = json.loads(stdout)
+            if "error" in result:
+                return self._empty(result["error"])
+            return result
+
+        except subprocess.TimeoutExpired:
+            return self._empty("PaddleOCR 子进程超时 (120s)")
+        except json.JSONDecodeError as e:
+            return self._empty(f"子进程输出解析失败: {e}")
+        except Exception as e:  # noqa: BLE001
+            return self._empty(f"子进程调用异常: {e}")
 
     # ─── PaddleOCR 推理 ──────────────────────────────────────
     def _infer_paddle(self, image_path: str) -> dict:

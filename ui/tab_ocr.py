@@ -35,7 +35,7 @@ def _imwrite_safe(path: str, img) -> bool:
         return False
 
 
-def create_tab_ocr(config: dict, registry):
+def create_tab_ocr(config: dict, registry, mode_toggle=None):
     with gr.Row():
         with gr.Column(scale=1):
             input_editor = gr.ImageEditor(
@@ -50,39 +50,41 @@ def create_tab_ocr(config: dict, registry):
                 ),
                 elem_id="ocr-roi-editor",
             )
-            engine_choice = gr.Dropdown(
-                choices=["自动路由 (推荐)", "OvisOCR2 (印刷文档)",
-                         "PaddleOCR-VL (相机照片)",
-                         "HunyuanOCR (手写体·需24GB显存)",
-                         "PP-OCRv6 (CPU快速)"],
-                value="自动路由 (推荐)",
-                label="引擎选择",
-            )
-            conf_threshold = gr.Slider(
-                minimum=0.50, maximum=0.95, step=0.05,
-                value=config.get("ocr", {}).get("confidence_threshold", 0.75),
-                label="置信度门槛 (低于此值 → 待人工复核)",
-            )
-            perspective_enable = gr.Checkbox(
-                label="几何矫正 (自动纠偏 + 透视校正 · 拍照场景建议开启)",
-                value=True,
-            )
-            with gr.Accordion("预处理设置 (拍摄良好时无需开启 · 双路径对比会加倍耗时)", open=False):
-                pp_enable = gr.Checkbox(label="启用预处理 + 双路径对比 (耗时翻倍)", value=False)
-                pp_clahe = gr.Checkbox(label="CLAHE 局部对比度 (clip=2, grid=4)", value=True)
-                pp_sharpen = gr.Checkbox(label="锐化 (工业刻字建议关闭)", value=False)
-                pp_upscale = gr.Checkbox(label="小图放大 2x (极小字符时开启)", value=False)
-                pp_binarize = gr.Checkbox(
-                    label="自适应二值化 (仅黑白高对比标记)", value=False)
-            with gr.Accordion("后处理纠错 (正则规则修正混淆字符)", open=False):
-                postprocess_enable = gr.Checkbox(
-                    label="启用后处理纠错 (数字中 O→0, I→1, S→5, B→8)",
-                    value=True)
-                custom_regex = gr.Textbox(
-                    label="自定义正则规则 (每行一条: pattern|||replacement)",
-                    placeholder="例: (?<=\\d)G(?=E)|||6  →  将数字后GE中的G修正为6",
-                    lines=3,
+            # ─── 工程师专属控件 (工人模式隐藏) ─────────────────
+            with gr.Column(visible=False) as eng_panel:
+                engine_choice = gr.Dropdown(
+                    choices=["自动路由 (推荐)", "OvisOCR2 (印刷文档)",
+                             "PaddleOCR-VL (相机照片)",
+                             "HunyuanOCR (手写体·需24GB显存)",
+                             "PP-OCRv6 (CPU快速)"],
+                    value="自动路由 (推荐)",
+                    label="引擎选择",
                 )
+                conf_threshold = gr.Slider(
+                    minimum=0.50, maximum=0.95, step=0.05,
+                    value=config.get("ocr", {}).get("confidence_threshold", 0.75),
+                    label="置信度门槛 (低于此值 → 待人工复核)",
+                )
+                perspective_enable = gr.Checkbox(
+                    label="几何矫正 (自动纠偏 + 透视校正 · 拍照场景建议开启)",
+                    value=True,
+                )
+                with gr.Accordion("预处理设置 (拍摄良好时无需开启 · 双路径对比会加倍耗时)", open=False):
+                    pp_enable = gr.Checkbox(label="启用预处理 + 双路径对比 (耗时翻倍)", value=False)
+                    pp_clahe = gr.Checkbox(label="CLAHE 局部对比度 (clip=2, grid=4)", value=True)
+                    pp_sharpen = gr.Checkbox(label="锐化 (工业刻字建议关闭)", value=False)
+                    pp_upscale = gr.Checkbox(label="小图放大 2x (极小字符时开启)", value=False)
+                    pp_binarize = gr.Checkbox(
+                        label="自适应二值化 (仅黑白高对比标记)", value=False)
+                with gr.Accordion("后处理纠错 (正则规则修正混淆字符)", open=False):
+                    postprocess_enable = gr.Checkbox(
+                        label="启用后处理纠错 (数字中 O→0, I→1, S→5, B→8)",
+                        value=True)
+                    custom_regex = gr.Textbox(
+                        label="自定义正则规则 (每行一条: pattern|||replacement)",
+                        placeholder="例: (?<=\\d)G(?=E)|||6  →  将数字后GE中的G修正为6",
+                        lines=3,
+                    )
             with gr.Row():
                 run_btn = gr.Button("识别", variant="primary", scale=2)
                 camera_btn = gr.Button("相机采集", scale=1)
@@ -120,6 +122,14 @@ def create_tab_ocr(config: dict, registry):
         inputs=[],
         outputs=[input_editor],
     )
+
+    # ─── 模式切换 → 工程师面板可见性 ─────────────────────────
+    if mode_toggle is not None:
+        mode_toggle.change(
+            fn=lambda m: gr.update(visible=(m == "工程师模式")),
+            inputs=[mode_toggle],
+            outputs=[eng_panel],
+        )
 
 
 # ─── 引擎名称映射 ───────────────────────────────────────────

@@ -44,7 +44,7 @@ def _get_config() -> dict:
     return _config
 
 
-def create_tab_qc(config: dict, registry):
+def create_tab_qc(config: dict, registry, mode_toggle=None):
     set_registry(registry)
 
     # ═══ 单行双列: 左=输入/配置, 右=输出/结果 ═══════════════════
@@ -66,73 +66,75 @@ def create_tab_qc(config: dict, registry):
                 camera_btn = gr.Button("📷 相机采集", scale=1)
                 detect_btn = gr.Button("🔍 一键检测", variant="primary", scale=2)
 
-            gr.Markdown("---")
-            gr.Markdown("### 检测模式")
-            detect_mode = gr.Radio(
-                choices=["零样本 (Grounding DINO)", "少样本 (PatchCore)"],
-                value="零样本 (Grounding DINO)",
-                label="检测模式",
-            )
-            gr.Markdown("### 检测配置")
-            recipe_choice = gr.Dropdown(
-                label="产品配方 (快速切换)",
-                choices=["(自定义)"] + list_recipes(),
-                value="(自定义)",
-            )
-            prompt_input = gr.Textbox(
-                label="缺陷提示词 (中文或英文, 点号分隔)",
-                value=DEFAULT_PROMPT,
-                placeholder="划痕.凹陷.裂纹.污渍.毛刺.色差 (自动翻译为英文)",
-                lines=2,
-            )
-            threshold_slider = gr.Slider(
-                0.1, 0.9, value=0.3, step=0.05,
-                label="置信度阈值 (越低越敏感, 推荐 0.25~0.4)",
-            )
+            # ─── 工程师专属控件 (工人模式隐藏) ─────────────────
+            with gr.Column(visible=False) as eng_panel:
+                gr.Markdown("---")
+                gr.Markdown("### 检测模式")
+                detect_mode = gr.Radio(
+                    choices=["零样本 (Grounding DINO)", "少样本 (PatchCore)"],
+                    value="零样本 (Grounding DINO)",
+                    label="检测模式",
+                )
+                gr.Markdown("### 检测配置")
+                recipe_choice = gr.Dropdown(
+                    label="产品配方 (快速切换)",
+                    choices=["(自定义)"] + list_recipes(),
+                    value="(自定义)",
+                )
+                prompt_input = gr.Textbox(
+                    label="缺陷提示词 (中文或英文, 点号分隔)",
+                    value=DEFAULT_PROMPT,
+                    placeholder="划痕.凹陷.裂纹.污渍.毛刺.色差 (自动翻译为英文)",
+                    lines=2,
+                )
+                threshold_slider = gr.Slider(
+                    0.1, 0.9, value=0.3, step=0.05,
+                    label="置信度阈值 (越低越敏感, 推荐 0.25~0.4)",
+                )
 
-            gr.Markdown("---")
-            gr.Markdown("### 3D 深度融合 (结构光)")
-            fusion_enable = gr.Checkbox(
-                label="启用 3D 深度融合 (深度几何 + 2D 纹理联合判定)",
-                value=True,
-            )
-            depth_threshold = gr.Slider(
-                0.1, 3.0, value=0.5, step=0.1,
-                label="深度偏差阈值 mm (越小越敏感, 按件公差设定)",
-            )
-            fusion_mode_radio = gr.Radio(
-                choices=["OR (高召回, 推荐)", "AND (高精确)", "仅深度"],
-                value="OR (高召回, 推荐)",
-                label="融合判定策略",
-            )
+                gr.Markdown("---")
+                gr.Markdown("### 3D 深度融合 (结构光)")
+                fusion_enable = gr.Checkbox(
+                    label="启用 3D 深度融合 (深度几何 + 2D 纹理联合判定)",
+                    value=True,
+                )
+                depth_threshold = gr.Slider(
+                    0.1, 3.0, value=0.5, step=0.1,
+                    label="深度偏差阈值 mm (越小越敏感, 按件公差设定)",
+                )
+                fusion_mode_radio = gr.Radio(
+                    choices=["OR (高召回, 推荐)", "AND (高精确)", "仅深度"],
+                    value="OR (高召回, 推荐)",
+                    label="融合判定策略",
+                )
 
-            gr.Markdown("---")
-            gr.Markdown("### 配方管理")
-            with gr.Row():
-                recipe_name_input = gr.Textbox(
-                    label="配方名称", placeholder="如: 铝合金外壳", scale=2)
-                recipe_save_btn = gr.Button("保存", scale=1)
-                recipe_del_btn = gr.Button("删除", scale=1)
-            recipe_msg = gr.Markdown("")
+                gr.Markdown("---")
+                gr.Markdown("### 配方管理")
+                with gr.Row():
+                    recipe_name_input = gr.Textbox(
+                        label="配方名称", placeholder="如: 铝合金外壳", scale=2)
+                    recipe_save_btn = gr.Button("保存", scale=1)
+                    recipe_del_btn = gr.Button("删除", scale=1)
+                recipe_msg = gr.Markdown("")
 
-            gr.Markdown("---")
-            gr.Markdown("### 少样本注册 (PatchCore)")
-            pc_product = gr.Dropdown(
-                label="产品特征库",
-                choices=["(新建)"] + list_banks(),
-                value="(新建)",
-            )
-            pc_product_name = gr.Textbox(
-                label="新产品名称 (新建时填写)",
-                placeholder="如: PCB板_型号A",
-            )
-            pc_ok_upload = gr.File(
-                label="上传 OK 样本 (10~30张合格品图片)",
-                file_count="multiple",
-                file_types=[".png", ".jpg", ".jpeg", ".bmp", ".tiff"],
-            )
-            pc_register_btn = gr.Button("📦 注册建库", variant="secondary")
-            pc_status = gr.Markdown("")
+                gr.Markdown("---")
+                gr.Markdown("### 少样本注册 (PatchCore)")
+                pc_product = gr.Dropdown(
+                    label="产品特征库",
+                    choices=["(新建)"] + list_banks(),
+                    value="(新建)",
+                )
+                pc_product_name = gr.Textbox(
+                    label="新产品名称 (新建时填写)",
+                    placeholder="如: PCB板_型号A",
+                )
+                pc_ok_upload = gr.File(
+                    label="上传 OK 样本 (10~30张合格品图片)",
+                    file_count="multiple",
+                    file_types=[".png", ".jpg", ".jpeg", ".bmp", ".tiff"],
+                )
+                pc_register_btn = gr.Button("📦 注册建库", variant="secondary")
+                pc_status = gr.Markdown("")
 
         # ─── 右列: 全部输出/结果 ─────────────────────────────
         with gr.Column(scale=3):
@@ -195,6 +197,14 @@ def create_tab_qc(config: dict, registry):
         inputs=[pc_product, pc_product_name, pc_ok_upload],
         outputs=[pc_status, pc_product],
     )
+
+    # ─── 模式切换 → 工程师面板可见性 ─────────────────────────
+    if mode_toggle is not None:
+        mode_toggle.change(
+            fn=lambda m: gr.update(visible=(m == "工程师模式")),
+            inputs=[mode_toggle],
+            outputs=[eng_panel],
+        )
 
 
 # ─── 回调函数 ────────────────────────────────────────────────
