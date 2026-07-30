@@ -1,0 +1,29 @@
+# VisionOCR Pro - PaddleOCR 子服务 (Windows Docker Desktop + WSL2 GPU)
+#
+# 用途: 在 Windows 上通过容器运行 PaddleOCR-VL (绕过原生 cudnn DLL 冲突)
+# 构建: docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
+# 运行: docker run --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
+#
+# 输出: JSON 到 stdout, 格式与 _paddle_worker.py 一致
+#   {"text": "...", "lines": [...], "confidence": 0.95, "engine": "paddleocr_vl"}
+
+FROM paddlepaddle/paddle:3.0.0-gpu-cuda12.6-cudnn9.0
+
+# 避免交互式提示
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 安装 PaddleOCR
+RUN pip install --no-cache-dir paddleocr>=2.7 --quiet
+
+# 复制 worker 脚本
+COPY engines/ocr/_paddle_worker.py /app/worker.py
+
+WORKDIR /app
+
+# 默认使用 GPU
+ENV FLAGS_enable_pir_api=0
+ENV FLAGS_use_mkldnn=0
+
+# 入口: python worker.py <image_path> [--device gpu]
+ENTRYPOINT ["python", "worker.py"]
+CMD ["--help"]
