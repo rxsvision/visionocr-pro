@@ -24,22 +24,22 @@ export:
     # - "kingdee"             # 金蝶 K3/云星空 (需配置下方凭据)
   # 用友 ERP 对接 (试点工厂填入实际地址和凭据后取消注释 enabled)
   yonyou:
-    base_url: ""              # 如 http://192.168.1.100:8080
-    app_key: ""
-    app_secret: ""
+    base_url: "${YONYOU_BASE_URL:-}"
+    app_key: "${YONYOU_APP_KEY:-}"
+    app_secret: "${YONYOU_APP_SECRET:-}"
   # 金蝶 ERP 对接
   kingdee:
-    base_url: ""              # 如 http://192.168.1.200/k3cloud
-    acct_id: ""               # 账套ID
-    username: ""
-    password: ""
+    base_url: "${KINGDEE_BASE_URL:-}"
+    acct_id: "${KINGDEE_ACCT_ID:-}"
+    username: "${KINGDEE_USERNAME:-}"
+    password: "${KINGDEE_PASSWORD:-}"
     lcid: 2052                # 语言 (2052=中文)
 
 # IM 通知 (回款提醒推送给签单人)
 # 使用群机器人 Webhook, 无需 OAuth 审批; 配合 signer_map 表 @mention 对应签单人
 notify:
-  feishu_webhook: ""          # 飞书群机器人: https://open.feishu.cn/open-apis/bot/v2/hook/{token}
-  wecom_webhook: ""           # 企微群机器人: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={key}
+  feishu_webhook: "${FEISHU_WEBHOOK:-}"
+  wecom_webhook: "${WECOM_WEBHOOK:-}"
   desktop_fallback: true      # IM 未配置/失败时回退桌面通知
   # 默认联系人: 签单人缺失或映射表查不到时, 提醒发给此人 (老板指定)
   default_contact:
@@ -123,14 +123,14 @@ camera:
   gigE_ip: "192.168.1.100"
   trigger: "software"        # software | hardware
   exposure_us: 5000
-  hik_sdk_path: "C:\\Program Files (x86)\\MVS\\Development\\Bin\\Win64_x64"
+  hik_sdk_path: "${HIK_SDK_PATH:-C:\\Program Files (x86)\\MVS\\Development\\Bin\\Win64_x64}"
 
 # Sizector 3D 结构光深度相机 (Phase 4C: 深度融合缺陷检测)
 # 通过 .NET wrapper (MPSizectorS_DotNet.dll) + pythonnet 调用, 输出深度图(mm)+RGB
 sizector:
   enabled: true
   # .NET wrapper 目录 (含 MPSizectorS_DotNet.dll), 按实际 SDK 安装路径修改
-  dll_dir: "E:/2_技术产品与项目交付/2_2_SDK与开发环境/1_11AI视觉应用模块与3D视觉算法库开发包/MPSizectorS_SDK_V2_70/02_Binary/03_SizectorS_NET"
+  dll_dir: "${SIZECTOR_SDK_DIR:-}"
   index: 0                   # 多相机时按枚举顺序选择
   serial: ""                 # 可选: 按序列号精确匹配目标相机 (优先于 index)
   working_mode: "precise"    # fastest | fast | standard | precise | super_precise | dynamic

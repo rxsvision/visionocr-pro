@@ -12,7 +12,7 @@ class RTMPoseEngine(BaseEngine):
             category="pose",
             vram_gb=2.0,
             license="Apache-2.0",
-            description="实时人体姿态估计, 17/133 关键点, 支持多人",
+            description="[stub] 实时人体姿态估计, 17/133 关键点, 支持多人",
             tags=["姿态", "关键点", "实时", "多人"],
         )
 

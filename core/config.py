@@ -1,16 +1,49 @@
-"""配置加载"""
+"""配置加载 - 支持环境变量替换 (${VAR} / ${VAR:-default})"""
+import os
+import re
 from pathlib import Path
 import yaml
 
 DEFAULT_CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
+# 匹配 ${VAR_NAME} 或 ${VAR_NAME:-default_value}
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def _resolve_env_vars(value):
+    """递归替换配置值中的 ${ENV_VAR} 引用。"""
+    if isinstance(value, str):
+        def _replacer(m):
+            var_name = m.group(1)
+            default = m.group(2) if m.group(2) is not None else ""
+            return os.environ.get(var_name, default)
+        return _ENV_PATTERN.sub(_replacer, value)
+    elif isinstance(value, dict):
+        return {k: _resolve_env_vars(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_resolve_env_vars(item) for item in value]
+    return value
+
 
 def load_config(path: Path | str | None = None) -> dict:
+    # 尝试加载 .env 文件 (可选依赖)
+    try:
+        from dotenv import load_dotenv
+        env_file = DEFAULT_CONFIG_PATH.parent / ".env"
+        if env_file.exists():
+            load_dotenv(env_file)
+    except ImportError:
+        pass
+
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not path.exists():
         return _defaults()
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f) or {}
+
+    # 环境变量替换
+    cfg = _resolve_env_vars(cfg)
+
     # 路径解析为绝对路径
     root = path.parent
     for key in ("models_dir", "data_dir"):

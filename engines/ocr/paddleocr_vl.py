@@ -10,10 +10,13 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.paddleocr_vl")
 
 
 class PaddleOCRVLEngine(BaseEngine):
@@ -66,12 +69,12 @@ class PaddleOCRVLEngine(BaseEngine):
             self._model = PaddleOCR(**kwargs)
             self._backend = "paddleocr"
             self.state = EngineState.READY
-            print(f"[PaddleOCR-VL] 加载完成 (device={'gpu' if use_gpu else 'cpu'})")
+            logger.info("加载完成 (device=%s)", "gpu" if use_gpu else "cpu")
             return
         except ImportError:
-            print("[PaddleOCR-VL] paddleocr 未安装, 尝试降级到 RapidOCR")
+            logger.warning("paddleocr 未安装, 尝试降级到 RapidOCR")
         except Exception as e:  # noqa: BLE001
-            print(f"[PaddleOCR-VL] PaddleOCR 初始化失败 ({e}), 尝试降级到 RapidOCR")
+            logger.warning("PaddleOCR 初始化失败 (%s), 尝试降级到 RapidOCR", e)
 
         # 2) 降级: RapidOCR
         try:
@@ -80,16 +83,16 @@ class PaddleOCRVLEngine(BaseEngine):
             self._fallback = RapidOCR()
             self._backend = "rapidocr"
             self.state = EngineState.READY
-            print("[PaddleOCR-VL] 已降级到 RapidOCR (CPU 兜底)")
+            logger.warning("已降级到 RapidOCR (CPU 兜底)")
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[PaddleOCR-VL] 依赖缺失: 请执行 `pip install paddleocr` "
-                f"或 `pip install rapidocr_onnxruntime`。原始错误: {e}"
+            logger.error(
+                "依赖缺失: 请执行 `pip install paddleocr` "
+                "或 `pip install rapidocr_onnxruntime`。原始错误: %s", e
             )
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[PaddleOCR-VL] 降级初始化失败: {e}")
+            logger.error("降级初始化失败: %s", e)
 
     def unload(self) -> None:
         self._model = None

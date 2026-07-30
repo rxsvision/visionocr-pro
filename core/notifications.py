@@ -2,9 +2,12 @@
 
 安全: 所有动态文本经过 _sanitize() 清洗, 防止命令注入 (C1 修复)。
 """
+import logging
 import platform
 import re
 import subprocess
+
+logger = logging.getLogger("visionocr.notifications")
 
 
 def _sanitize(text: str, max_len: int = 200) -> str:
@@ -40,4 +43,4 @@ def notify(title: str, message: str) -> None:
             script = f'display notification "{message}" with title "{title}"'
             subprocess.run(["osascript", "-e", script], capture_output=True, timeout=5)
     except Exception:
-        print(f"[Notify] {title}: {message}")
+        logger.warning("[Notify] %s: %s", title, message)

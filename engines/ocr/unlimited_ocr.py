@@ -20,11 +20,14 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.unlimited_ocr")
 
 
 class UnlimitedOCREngine(BaseEngine):
@@ -53,18 +56,18 @@ class UnlimitedOCREngine(BaseEngine):
             from rapidocr_onnxruntime import RapidOCR  # type: ignore
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[UnlimitedOCR] 依赖缺失: 请执行 `pip install rapidocr_onnxruntime` "
-                f"(PDF 支持另需 `pip install pymupdf`)。原始错误: {e}"
+            logger.error(
+                "依赖缺失: 请执行 `pip install rapidocr_onnxruntime` "
+                "(PDF 支持另需 `pip install pymupdf`)。原始错误: %s", e
             )
             return
         try:
             self._rapid = RapidOCR()
             self.state = EngineState.READY
-            print("[UnlimitedOCR] 就绪 (分页 + RapidOCR)")
+            logger.info("就绪 (分页 + RapidOCR)")
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[UnlimitedOCR] 初始化失败: {e}")
+            logger.error("初始化失败: %s", e)
 
     def unload(self) -> None:
         self._rapid = None

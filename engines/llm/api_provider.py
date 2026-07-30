@@ -8,10 +8,13 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.api_provider")
 
 
 class APIEngine(BaseEngine):
@@ -38,15 +41,15 @@ class APIEngine(BaseEngine):
 
         if not self._base_url:
             self.state = EngineState.ERROR
-            print("[API VLM] 未配置 base_url")
+            logger.error("[API VLM] 未配置 base_url")
             return
         if not self._api_key:
             self.state = EngineState.ERROR
-            print("[API VLM] 未配置 API Key (config.llm.api.api_key 或 VISIONOCR_API_KEY)")
+            logger.error("[API VLM] 未配置 API Key (config.llm.api.api_key 或 VISIONOCR_API_KEY)")
             return
 
         self.state = EngineState.READY
-        print(f"[API VLM] 就绪: {self._model_name} @ {self._base_url}")
+        logger.info("[API VLM] 就绪: %s @ %s", self._model_name, self._base_url)
 
     def unload(self) -> None:
         self._model = None
@@ -100,7 +103,7 @@ class APIEngine(BaseEngine):
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:  # noqa: BLE001
-            print(f"[API VLM] 请求失败: {e}")
+            logger.error("[API VLM] 请求失败: %s", e)
             return ""
 
     @staticmethod

@@ -21,9 +21,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import date, timedelta
 from typing import Any, Optional
+
+logger = logging.getLogger("visionocr.contract_extractor")
 
 # ─── 抽取 Prompt ─────────────────────────────────────────────
 _SYSTEM_PROMPT = (
@@ -329,7 +332,7 @@ def _llm_extract(text: str, llm: Any, base_date: date) -> Optional[dict]:
     try:
         raw = llm.chat(messages, max_tokens=8192)
     except Exception as e:  # noqa: BLE001
-        print(f"[Extractor] LLM 调用失败: {e}")
+        logger.error("[Extractor] LLM 调用失败: %s", e)
         return None
     if not raw:
         return None

@@ -65,14 +65,17 @@ class GroundingDINOEngine(BaseEngine):
                 model=model_id,
                 device=device,
             )
-            # GPU 时启用 FP16 半精度: 显存减半, 推理加速 ~40%
-            if device >= 0:
+            # FP16 可选: 默认 FP32 保证兼容性 (实测仅 ~1GB VRAM, 无需省显存)
+            # transformers 5.x 的 image_processor 输出 FP32, 强制 FP16 会导致
+            # "expected scalar type Half but found Float" 推理全部失败
+            use_fp16 = qc_cfg.get("grounding_dino_fp16", False)
+            if device >= 0 and use_fp16:
                 import torch
-                pipe_kwargs["torch_dtype"] = torch.float16
+                pipe_kwargs["dtype"] = torch.float16
             self._model = hf_pipeline(**pipe_kwargs)
             self.state = EngineState.READY
             logger.info("Grounding DINO 就绪 (%s)",
-                        "FP16" if device >= 0 else "FP32")
+                        "FP16" if (device >= 0 and use_fp16) else "FP32")
         except Exception as e:
             logger.error("Grounding DINO 加载失败: %s", e)
             self.state = EngineState.ERROR

@@ -10,9 +10,12 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Any
+
+logger = logging.getLogger("visionocr.document_reader")
 
 try:
     import cv2
@@ -199,5 +202,5 @@ def _ocr_image(image_path: str, registry, ocr_engine: str) -> str:
                 pass
         return text
     except Exception as e:  # noqa: BLE001
-        print(f"[ContractReader] OCR 失败 {image_path}: {e}")
+        logger.error("[ContractReader] OCR 失败 %s: %s", image_path, e)
         return ""

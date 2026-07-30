@@ -12,7 +12,7 @@ class CTRGCNEngine(BaseEngine):
             category="pose",
             vram_gb=0.5,
             license="MIT",
-            description="基于骨架的动作识别, 时空图卷积网络",
+            description="[stub] 基于骨架的动作识别, 时空图卷积网络",
             tags=["动作识别", "骨架", "GCN", "时序"],
         )
 

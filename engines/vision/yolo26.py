@@ -12,7 +12,7 @@ class YOLO26Engine(BaseEngine):
             category="vision",
             vram_gb=4.0,
             license="AGPL-3.0",
-            description="边缘设备实时检测, 低延迟高吞吐",
+            description="[stub] 边缘设备实时检测, 低延迟高吞吐",
             tags=["检测", "边缘", "实时", "轻量"],
         )
 

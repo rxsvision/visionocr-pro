@@ -11,10 +11,13 @@ Markdown / 结构化文本。OmniDocBench 96.58, 表格 TEDS 94.76,
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.ovisocr2")
 
 # 候选模型 ID (按优先级尝试, 兼容尚未发布/更名的情况)
 _HF_CANDIDATES = [
@@ -57,16 +60,15 @@ class OvisOCR2Engine(BaseEngine):
             self.state = EngineState.ERROR
             err_msg = str(e)
             if "DLL load failed" in err_msg:
-                print(
-                    "[OvisOCR2] DLL 加载失败 (非包缺失): 通常是 CUDA/cuDNN 版本冲突。\n"
-                    "  修复: pip install torch --force-reinstall --index-url "
-                    "https://download.pytorch.org/whl/cu126\n"
-                    f"  原始错误: {e}"
+                logger.error(
+                    "DLL 加载失败 (非包缺失): 通常是 CUDA/cuDNN 版本冲突。"
+                    " 修复: pip install torch --force-reinstall --index-url "
+                    "https://download.pytorch.org/whl/cu126 原始错误: %s", e
                 )
             else:
-                print(
-                    "[OvisOCR2] 依赖缺失: 请执行 `pip install transformers torch pillow` "
-                    f"后重试。原始错误: {e}"
+                logger.error(
+                    "依赖缺失: 请执行 `pip install transformers torch pillow` "
+                    "后重试。原始错误: %s", e
                 )
             return
 
@@ -74,10 +76,10 @@ class OvisOCR2Engine(BaseEngine):
         model_path = self._resolve_model_path()
         if model_path is None:
             self.state = EngineState.ERROR
-            print(
-                "[OvisOCR2] 未找到模型权重。请:\n"
-                "  - 将模型放入 models/ovis-ocr2/ (本地模式), 或\n"
-                f"  - 联网从 HuggingFace 下载 (候选: {_HF_CANDIDATES})"
+            logger.error(
+                "未找到模型权重。请: "
+                "- 将模型放入 models/ovis-ocr2/ (本地模式), 或 "
+                "- 联网从 HuggingFace 下载 (候选: %s)", _HF_CANDIDATES
             )
             return
 
@@ -101,10 +103,10 @@ class OvisOCR2Engine(BaseEngine):
             self._model.eval()
             self._model_path = model_path
             self.state = EngineState.READY
-            print(f"[OvisOCR2] 加载完成: {model_path} (device={device})")
+            logger.info("加载完成: %s (device=%s)", model_path, device)
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[OvisOCR2] 模型加载失败: {e}")
+            logger.error("模型加载失败: %s", e)
 
     def unload(self) -> None:
         # 释放显存
@@ -228,7 +230,7 @@ class OvisOCR2Engine(BaseEngine):
         # 最后: 快速检测网络, 可达才返回 HF ID (避免 5 分钟超时)
         if self._hf_reachable():
             return _HF_CANDIDATES[0]
-        print("[OvisOCR2] HuggingFace 不可达且本地无缓存, 跳过。")
+        logger.warning("HuggingFace 不可达且本地无缓存, 跳过。")
         return None
 
     @staticmethod

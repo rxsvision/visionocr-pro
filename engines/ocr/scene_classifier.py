@@ -19,10 +19,13 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.scene_classifier")
 
 # 常见手机/相机厂商关键字 (EXIF Make/Model/Software)
 _CAMERA_MARKERS = (
@@ -57,13 +60,13 @@ class SceneClassifierEngine(BaseEngine):
             from PIL import Image  # type: ignore  # noqa: F401
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[SceneClassifier] 依赖缺失: 请执行 "
-                f"`pip install opencv-python pillow numpy`。原始错误: {e}"
+            logger.error(
+                "依赖缺失: 请执行 "
+                "`pip install opencv-python pillow numpy`。原始错误: %s", e
             )
             return
         self.state = EngineState.READY
-        print("[SceneClassifier] 就绪 (规则版 v1)")
+        logger.info("就绪 (规则版 v1)")
 
     def unload(self) -> None:
         self._model = None

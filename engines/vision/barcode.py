@@ -12,7 +12,7 @@ class BarcodeEngine(BaseEngine):
             category="vision",
             vram_gb=0.1,
             license="LGPL/Apache",
-            description="一维码/二维码识别, 支持 EAN/UPC/QR/DataMatrix 等",
+            description="[stub] 一维码/二维码识别, 支持 EAN/UPC/QR/DataMatrix 等",
             tags=["条码", "二维码", "QR", "轻量"],
         )
 

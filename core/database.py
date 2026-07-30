@@ -11,8 +11,11 @@
 兼容性: 保留旧 payments 表 (不删), 新增 receivables 作为主表;
         旧库通过 _migrate 平滑升级, 幂等不丢数据。
 """
+import logging
 import sqlite3
 from pathlib import Path
+
+logger = logging.getLogger("visionocr.database")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ocr_results (
@@ -331,4 +334,4 @@ def log_ocr_audit(data_dir: str, record: dict) -> None:
         conn.close()
     except Exception as e:
         # 审计日志写入失败不应阻断主流程
-        print(f"[AuditLog] 写入失败 (不影响识别): {e}")
+        logger.warning("[AuditLog] 写入失败 (不影响识别): %s", e)

@@ -6,12 +6,15 @@
 3. LRU 策略自动加载/卸载, 保证不超显存预算
 4. 空闲超时自动卸载
 """
+import logging
 import threading
 import time
 from collections import OrderedDict
 from typing import Optional
 
 from engines.base import BaseEngine, EngineState
+
+logger = logging.getLogger("visionocr.registry")
 
 
 class EngineRegistry:
@@ -37,7 +40,7 @@ class EngineRegistry:
     ENGINE_MANIFEST = [
         ("engines.ocr.ovisocr2", "OvisOCR2Engine"),
         ("engines.ocr.paddleocr_vl", "PaddleOCRVLEngine"),
-        ("engines.ocr.hunyuan_ocr", "HunyuanOCREngine"),
+        # ("engines.ocr.hunyuan_ocr", "HunyuanOCREngine"),  # 模块未实现, 待接入
         ("engines.ocr.rapidocr", "RapidOCREngine"),
         ("engines.ocr.unlimited_ocr", "UnlimitedOCREngine"),
         ("engines.ocr.mineru", "MinerUEngine"),
@@ -70,10 +73,10 @@ class EngineRegistry:
                 ok_count += 1
             except Exception as e:
                 skip_count += 1
-                print(f"[Registry] Skip {class_name}: {e}")
+                logger.debug("跳过 %s: %s", class_name, e)
         elapsed = time.time() - t0
-        print(f"[Registry] 注册完成: {ok_count} 引擎就绪, "
-              f"{skip_count} 跳过 (耗时 {elapsed:.2f}s)")
+        logger.info("注册完成: %d 引擎, %d 跳过 (耗时 %.2fs)",
+                    ok_count, skip_count, elapsed)
 
     # ─── 获取 ───────────────────────────────────────────────
     def get(self, name: str) -> Optional[BaseEngine]:
@@ -91,6 +94,7 @@ class EngineRegistry:
                 "state": eng.state.value,
                 "vram_gb": eng.meta.vram_gb,
                 "license": eng.meta.license,
+                "description": eng.meta.description,
             })
         return result
 
@@ -113,7 +117,7 @@ class EngineRegistry:
                 evict_name, _ = self._lru.popitem(last=True)
                 evict_eng = self._engines[evict_name]
                 if evict_eng.is_ready():
-                    print(f"[Registry] Evicting {evict_name} to free VRAM")
+                    logger.info("LRU 驱逐 %s 以释放显存", evict_name)
                     evict_eng.unload()
 
             engine.state = EngineState.LOADING

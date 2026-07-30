@@ -12,7 +12,7 @@ class RFDETREngine(BaseEngine):
             category="vision",
             vram_gb=8.0,
             license="Apache-2.0",
-            description="实时目标检测, COCO mAP 54.3, 支持自定义数据集",
+            description="[stub] 实时目标检测, COCO mAP 54.3, 支持自定义数据集",
             tags=["检测", "DETR", "实时"],
         )
 

@@ -16,10 +16,13 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.rapidocr")
 
 
 class RapidOCREngine(BaseEngine):
@@ -46,14 +49,14 @@ class RapidOCREngine(BaseEngine):
             from rapidocr_onnxruntime import RapidOCR  # type: ignore
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[RapidOCR] 依赖缺失: 请执行 `pip install rapidocr_onnxruntime` "
-                f"后重试。原始错误: {e}"
+            logger.error(
+                "依赖缺失: 请执行 `pip install rapidocr_onnxruntime` "
+                "后重试。原始错误: %s", e
             )
             return
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[RapidOCR] 初始化失败: {e}")
+            logger.error("初始化失败: %s", e)
             return
 
         try:
@@ -82,10 +85,10 @@ class RapidOCREngine(BaseEngine):
             self._use_gpu = providers is not None
             self.state = EngineState.READY
             mode = "GPU/CUDA" if self._use_gpu else "CPU"
-            print(f"[RapidOCR] 加载完成 ({mode}/ONNX)")
+            logger.info("加载完成 (%s/ONNX)", mode)
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[RapidOCR] 模型加载失败: {e}")
+            logger.error("模型加载失败: %s", e)
 
     def unload(self) -> None:
         """释放模型对象"""

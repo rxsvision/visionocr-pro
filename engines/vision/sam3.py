@@ -12,7 +12,7 @@ class SAM3Engine(BaseEngine):
             category="vision",
             vram_gb=12.0,
             license="Apache-2.0",
-            description="通用图像分割, 支持点/框/文本提示, 零样本迁移",
+            description="[stub] 通用图像分割, 支持点/框/文本提示, 零样本迁移",
             tags=["分割", "SAM", "交互式", "零样本"],
         )
 

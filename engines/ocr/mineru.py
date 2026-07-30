@@ -9,11 +9,14 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.mineru")
 
 
 class MinerUEngine(BaseEngine):
@@ -46,12 +49,12 @@ class MinerUEngine(BaseEngine):
 
             self._backend = "magic_pdf"
             self.state = EngineState.READY
-            print("[MinerU] magic-pdf 可用, 使用结构化解析后端")
+            logger.info("magic-pdf 可用, 使用结构化解析后端")
             return
         except ImportError:
-            print("[MinerU] magic-pdf 未安装, 降级到 OCR+正则结构检测")
+            logger.warning("magic-pdf 未安装, 降级到 OCR+正则结构检测")
         except Exception as e:  # noqa: BLE001
-            print(f"[MinerU] magic-pdf 加载异常 ({e}), 降级到兜底后端")
+            logger.warning("magic-pdf 加载异常 (%s), 降级到兜底后端", e)
 
         # 2) 降级: RapidOCR
         try:
@@ -60,16 +63,16 @@ class MinerUEngine(BaseEngine):
             self._rapid = RapidOCR()
             self._backend = "fallback"
             self.state = EngineState.READY
-            print("[MinerU] 降级后端就绪 (RapidOCR + 正则结构检测)")
+            logger.info("降级后端就绪 (RapidOCR + 正则结构检测)")
         except ImportError as e:
             self.state = EngineState.ERROR
-            print(
-                "[MinerU] 依赖缺失: 请执行 `pip install magic-pdf` "
-                f"或 `pip install rapidocr_onnxruntime`。原始错误: {e}"
+            logger.error(
+                "依赖缺失: 请执行 `pip install magic-pdf` "
+                "或 `pip install rapidocr_onnxruntime`。原始错误: %s", e
             )
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[MinerU] 降级初始化失败: {e}")
+            logger.error("降级初始化失败: %s", e)
 
     def unload(self) -> None:
         self._model = None
@@ -120,7 +123,7 @@ class MinerUEngine(BaseEngine):
                     self._rapid = RapidOCR()
                 except Exception:  # noqa: BLE001
                     return self._empty(f"magic-pdf 解析失败: {e}")
-            print(f"[MinerU] magic-pdf 失败 ({e}), 切换兜底后端")
+            logger.warning("magic-pdf 失败 (%s), 切换兜底后端", e)
             return self._infer_fallback(image_path)
 
     def _magic_pdf_new_api(self, image_path: str) -> dict:

@@ -14,7 +14,10 @@
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger("visionocr.llm_router")
 
 
 def _routing_cfg(config: dict) -> dict:
@@ -48,7 +51,7 @@ def get_llm(registry, config: Optional[dict] = None) -> Optional[Any]:
             if loaded.is_ready():
                 return loaded
         except Exception as e:  # noqa: BLE001
-            print(f"[LLM Router] {name} 加载失败: {e}")
+            logger.warning("[LLM Router] %s 加载失败: %s", name, e)
     return None
 
 
@@ -60,7 +63,7 @@ def _load_tier(registry, name: str) -> Optional[Any]:
         loaded = registry.ensure_loaded(name)
         return loaded if loaded.is_ready() else None
     except Exception as e:  # noqa: BLE001
-        print(f"[LLM Router] {name} 加载失败: {e}")
+        logger.warning("[LLM Router] %s 加载失败: %s", name, e)
         return None
 
 
@@ -98,7 +101,7 @@ def route_extract(registry, config: Optional[dict],
         try:
             result = extract_fn(llm)
         except Exception as e:  # noqa: BLE001
-            print(f"[LLM Router] {name} 抽取异常: {e}")
+            logger.warning("[LLM Router] %s 抽取异常: %s", name, e)
             continue
         last_result = result or {}
 
@@ -109,6 +112,6 @@ def route_extract(registry, config: Optional[dict],
         if good or tier == "cloud":
             return last_result, tier
         # 本地能力不足 → 升级云端
-        print(f"[LLM Router] 本地能力不足 (conf={conf:.2f}, valid={valid}), 升级云端兜底")
+        logger.warning("[LLM Router] 本地能力不足 (conf=%.2f, valid=%s), 升级云端兜底", conf, valid)
 
     return last_result, ("none" if not last_result else "local")

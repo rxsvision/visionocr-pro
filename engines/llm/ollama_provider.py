@@ -9,10 +9,13 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from typing import Any
 
 from engines.base import BaseEngine, EngineMeta, EngineState
+
+logger = logging.getLogger("visionocr.ollama_provider")
 
 
 class OllamaEngine(BaseEngine):
@@ -45,21 +48,21 @@ class OllamaEngine(BaseEngine):
             models = [m.get("name", "") for m in r.json().get("models", [])]
         except Exception as e:  # noqa: BLE001
             self.state = EngineState.ERROR
-            print(f"[Ollama] 服务不可达 ({self._host}): {e}")
+            logger.error("[Ollama] 服务不可达 (%s): %s", self._host, e)
             return
 
         # 2. 模型存在检测 (含 tag 归一化, e.g. qwen3-vl:8b == qwen3-vl:8b-xxx)
         if not self._model_available(models):
             self.state = EngineState.ERROR
-            print(
-                f"[Ollama] 服务在线但模型 '{self._model_name}' 未拉取。"
-                f" 可用: {models or '空'}。请先 `ollama pull {self._model_name}`。"
+            logger.error(
+                "[Ollama] 服务在线但模型 '%s' 未拉取。 可用: %s。请先 `ollama pull %s`。",
+                self._model_name, models or "空", self._model_name,
             )
             return
 
         self._models = models
         self.state = EngineState.READY
-        print(f"[Ollama] 就绪: {self._model_name} @ {self._host}")
+        logger.info("[Ollama] 就绪: %s @ %s", self._model_name, self._host)
 
     def unload(self) -> None:
         self._model = None
@@ -126,7 +129,7 @@ class OllamaEngine(BaseEngine):
             msg = r.json().get("message", {})
             return self._extract_answer(msg)
         except Exception as e:  # noqa: BLE001
-            print(f"[Ollama] chat 失败: {e}")
+            logger.error("[Ollama] chat 失败: %s", e)
             return ""
 
     @staticmethod

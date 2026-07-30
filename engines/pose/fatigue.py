@@ -12,7 +12,7 @@ class FatigueEngine(BaseEngine):
             category="pose",
             vram_gb=0.2,
             license="Apache-2.0",
-            description="基于关键点时序的疲劳状态分析, 支持驾驶/办公场景",
+            description="[stub] 基于关键点时序的疲劳状态分析, 支持驾驶/办公场景",
             tags=["疲劳", "驾驶", "办公", "健康监测"],
         )
 
