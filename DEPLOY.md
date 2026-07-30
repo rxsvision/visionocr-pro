@@ -2,381 +2,669 @@
 
 ## 目录
 
-1. [硬件要求](#1-硬件要求)
-2. [软件前置条件](#2-软件前置条件)
-3. [安装步骤](#3-安装步骤)
-4. [配置](#4-配置)
-5. [验证](#5-验证)
-6. [故障排除](#6-故障排除)
-7. [常见问题](#7-常见问题)
+1. [一键部署（推荐）](#1-一键部署推荐)
+2. [硬件要求](#2-硬件要求)
+3. [软件依赖矩阵](#3-软件依赖矩阵)
+4. [模型分布架构](#4-模型分布架构)
+5. [手动安装](#5-手动安装)
+6. [Docker 可选：Windows 运行 PaddleOCR](#6-docker-可选windows-运行-paddleocr)
+7. [离线部署](#7-离线部署)
+8. [配置](#8-配置)
+9. [验证](#9-验证)
+10. [故障排除](#10-故障排除)
+11. [常见问题](#11-常见问题)
 
 ---
 
-## 1. 硬件要求
+## 1. 一键部署（推荐）
+
+**前提条件**：已安装 Python 3.11-3.13、Git，且网络可用。
+
+```bash
+# 克隆仓库
+git clone https://github.com/rxsvision/visionocr-pro.git
+cd visionocr-pro
+
+# Windows: 双击或命令行运行
+setup.bat
+
+# Linux / Jetson:
+chmod +x setup.sh && ./setup.sh
+```
+
+脚本自动完成以下全部步骤：
+
+1. 检测 Python 版本（3.11-3.13）
+2. 创建 `.venv` 虚拟环境
+3. 安装 PyTorch（CUDA 12.6）+ 全部项目依赖
+4. 检测 Ollama → 拉取 qwen3-vl:8b 模型（~6.1GB）
+5. 下载 OvisOCR2 权重（~1.7GB）
+6. 运行 pytest 验证环境完整性
+
+完成后运行 `run.bat`（Windows）或 `source .venv/bin/activate && python app.py`（Linux）即可启动。
+
+> 首次运行约需 15-40 分钟（取决于网速），后续运行无需重复。
+
+---
+
+## 2. 硬件要求
 
 | 组件 | 最低要求 | 推荐配置 | 备注 |
 |------|----------|----------|------|
-| GPU | NVIDIA GPU, 8GB VRAM | NVIDIA GPU, 12GB+ VRAM | 已测试: RTX 4070 Ti (12GB) |
-| 内存 | 16GB RAM | 32GB RAM | 模型加载峰值占用较高 |
-| 存储 | SSD, 50GB 可用空间 | NVMe SSD, 100GB+ | 模型文件 + Ollama 权重约 10GB |
+| GPU | NVIDIA GPU, 8GB VRAM | RTX 4070 Ti 12GB+ | 需支持 CUDA 12.x |
+| 内存 | 16GB RAM | 32GB RAM | 模型加载峰值占用高 |
+| 存储 | SSD, 50GB 可用 | NVMe SSD, 100GB+ | 模型总计约 10-15GB |
 | CPU | 4 核 | 8 核+ | 图像预处理使用 CPU |
+| 网络 | 首次部署需联网 | — | 后续运行完全离线 |
 
-> 注意: 无 NVIDIA GPU 时系统可降级为 CPU 推理, 但速度显著下降 (单张 OCR 约 15-30s), 不建议生产使用。
+> 无 NVIDIA GPU 时可降级为 CPU 推理，但单张 OCR 约 15-30s，不建议生产使用。
 
-## 2. 软件前置条件
+---
 
-| 软件 | 版本要求 | 用途 | 备注 |
-|------|----------|------|------|
-| Python | 3.11 - 3.13 | 运行时 | **不支持 3.14** (包生态为空, 多数依赖无 wheel) |
-| CUDA Driver | 12.x | GPU 加速 | 仅需驱动, 不需单独安装 CUDA Toolkit |
-| Git | 2.x+ | 代码拉取 | -- |
-| Ollama | 最新版 | 本地 LLM 推理 | 合同自动化 LLM 抽取引擎 |
-| pip | 最新版 | 包管理 | 随 Python 自带 |
+## 3. 软件依赖矩阵
 
-## 3. 安装步骤
+### 3.1 必装项
 
-### 3.1 Windows
+| 软件 | 版本 | 用途 | 获取方式 |
+|------|------|------|----------|
+| Python | 3.11 - 3.13 | 运行时 | [python.org](https://www.python.org/downloads/) |
+| NVIDIA 驱动 | ≥ 525（支持 CUDA 12.x） | GPU 加速 | [nvidia.com/drivers](https://www.nvidia.com/drivers/) |
+| Git | 2.x+ | 代码拉取 | [git-scm.com](https://git-scm.com/) |
+| Ollama | 最新版 | 本地 LLM 推理 | [ollama.com](https://ollama.com/download) |
+
+### 3.2 自动安装项（setup 脚本处理）
+
+| 包/模型 | 版本 | 用途 | 安装方式 |
+|---------|------|------|----------|
+| PyTorch | ≥ 2.0 + cu126 | 推理框架 | pip (torch index) |
+| Gradio | ≥ 5.0 | Web UI | pip |
+| RapidOCR | ≥ 1.3 | 轻量 OCR 引擎 | pip |
+| transformers | ≥ 4.40 | Grounding DINO 加载 | pip |
+| onnxruntime-gpu | ≥ 1.17 | RapidOCR 加速 | pip |
+| OvisOCR2 权重 | — | 高精度文档 OCR | download_models.py |
+| qwen3-vl:8b | — | 合同 LLM 抽取 | ollama pull |
+| Grounding DINO | — | 零样本缺陷检测 | transformers 自动缓存 |
+
+### 3.3 可选项
+
+| 软件 | 条件 | 用途 |
+|------|------|------|
+| Docker Desktop + WSL2 | Windows 需要 PaddleOCR 时 | 容器内运行 PaddleOCR-VL |
+| PaddlePaddle GPU | 仅 Linux | PaddleOCR-VL 引擎（Linux 无冲突） |
+| CUDA Toolkit | 仅开发/编译自定义算子时 | 运行时只需驱动，不需 Toolkit |
+
+### 3.4 不支持项
+
+| 项目 | 原因 |
+|------|------|
+| Python 3.14 | torch/paddle/onnxruntime 无 wheel，pip 安装失败 |
+| PaddlePaddle GPU (Windows) | cudnn DLL 与 PyTorch 冲突，不可修复 |
+| AMD / Intel GPU | 项目依赖 CUDA 生态，无 ROCm/SYCL 适配 |
+
+---
+
+## 4. 模型分布架构
+
+模型权重**不**集中在仓库内，而是由各运行时工具管理。这是有意设计：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    模型分布架构                                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  代码仓库 (visionocr-pro/)                                        │
+│  └── models/                  ← 仅存放无工具托管的权重             │
+│      └── ovis-ocr2/           1.7GB   (download_models.py 管理)   │
+│                                                                   │
+│  Ollama 运行时 (~/.ollama/models/)                                │
+│  └── qwen3-vl:8b             5.8GB   (ollama pull/list 管理)     │
+│                                                                   │
+│  HuggingFace 缓存 (~/.cache/huggingface/hub/)                    │
+│  ├── grounding-dino-base      892MB   (transformers 自动下载)     │
+│  └── PP-OCRv6_medium          ~200MB  (paddle 自动下载)           │
+│                                                                   │
+│  PaddleOCR 缓存 (~/.paddleocr/)                                  │
+│  └── legacy models            41MB    (paddleocr 自动下载)        │
+│                                                                   │
+│  pip 包内嵌 (site-packages/)                                      │
+│  └── RapidOCR ONNX            ~50MB   (pip install 自带)          │
+│                                                                   │
+│  代码内置                                                          │
+│  └── PatchCore WideResNet50   ~100MB  (首次运行 torchvision 下载) │
+│                                                                   │
+├─────────────────────────────────────────────────────────────────┤
+│  总计: ~9GB    设计原则: 各工具管各自模型, 仓库只存代码+非托管权重  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**为什么不合并到一个文件夹？**
+
+- Ollama 只认 `~/.ollama/models`，移走即失效
+- transformers 默认查 HF cache，移走需每次设环境变量
+- 模型更新（如 qwen3-vl 升级）由各工具自动管理版本去重
+- 仓库保持 <5MB 代码 + 1.7GB 非托管权重，克隆/备份成本低
+
+---
+
+## 5. 手动安装
+
+如果一键脚本不适用（如网络受限、自定义路径），可手动执行：
+
+### 5.1 Windows
 
 ```bat
-:: 1. 克隆仓库
-git clone <repo-url> visionocr-pro
+:: 1. 克隆
+git clone https://github.com/rxsvision/visionocr-pro.git
 cd visionocr-pro
 
-:: 2. 创建虚拟环境
+:: 2. 虚拟环境
 python -m venv .venv
 .venv\Scripts\activate
 
-:: 3. 安装 PyTorch (CUDA 12.6)
+:: 3. PyTorch (CUDA 12.6)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-:: 4. 安装项目依赖
+:: 4. 项目依赖
 pip install -r requirements.txt
-```
 
-**Windows 重要说明:**
+:: 5. Ollama (从 https://ollama.com/download 下载安装)
+ollama pull qwen3-vl:8b
 
-- **不要安装 paddlepaddle-gpu。** 在 Windows 上, PaddlePaddle 的 cudnn DLL 与 PyTorch 存在冲突, 会导致 torch CUDA 初始化失败。Windows 下 OCR 由 RapidOCR 引擎处理, 功能完整, 无需 PaddleOCR。
-- 启动应用请使用项目根目录的 `run.bat`。该脚本为纯 ASCII 编码, 直接指向 venv 中的 Python 解释器, 避免路径和编码问题。
+:: 6. OCR 模型
+python scripts/download_models.py ovisocr2
 
-```bat
-:: 启动应用
+:: 7. 启动
 run.bat
 ```
 
-### 3.2 Linux / NVIDIA Jetson
+**Windows 重要说明：**
+
+- **不要安装 paddlepaddle-gpu。** cudnn DLL 与 PyTorch 冲突，不可修复。Windows OCR 由 RapidOCR 处理，功能完整。
+- 如需 PaddleOCR-VL，参见 [第 6 节 Docker 方案](#6-docker-可选windows-运行-paddleocr)。
+
+### 5.2 Linux / Jetson
 
 ```bash
-# 1. 克隆仓库
-git clone <repo-url> visionocr-pro
-cd visionocr-pro
-
-# 2. 创建虚拟环境
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. 安装 PyTorch (CUDA 12.6)
+# 1-4 同上
+git clone https://github.com/rxsvision/visionocr-pro.git && cd visionocr-pro
+python3 -m venv .venv && source .venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-
-# 4. 安装项目依赖
 pip install -r requirements.txt
 
-# 5. 安装 PaddlePaddle GPU (Linux 下正常工作)
+# 5. PaddlePaddle GPU (Linux 无冲突)
 pip install paddlepaddle-gpu
 
-# 6. 启动应用
+# 6. Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen3-vl:8b
+
+# 7. OCR 模型
+python scripts/download_models.py ovisocr2
+
+# 8. 启动
 python app.py
 ```
 
-**Linux/Jetson 说明:**
+---
 
-- paddlepaddle-gpu 在 Linux 下与 PyTorch 无冲突, 可正常安装。安装后可启用 PaddleOCR-VL 引擎, 提供更高精度的版面分析能力。
-- Jetson 设备请确保已刷写对应 JetPack 版本, 且 CUDA 驱动与 PyTorch cu126 兼容。
+## 6. Docker 可选：Windows 运行 PaddleOCR
 
-### 3.3 安装 Ollama 及模型
+Windows 原生不支持 PaddlePaddle GPU（DLL 冲突），但可通过 Docker Desktop + WSL2 GPU 直通在容器内运行。
+
+### 前提
+
+- Docker Desktop 4.x（WSL2 后端）
+- NVIDIA 驱动 ≥ 525
+- Docker Desktop 设置中启用 GPU 支持
+
+### 使用方式
 
 ```bash
-# 安装 Ollama (参见 https://ollama.com 获取对应平台安装包)
+# 构建 PaddleOCR 服务镜像
+docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
 
-# 拉取合同自动化 LLM 模型 (约 6.1GB)
-ollama pull qwen3-vl:8b
+# 运行推理（挂载图片目录）
+docker run --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
 ```
 
-该模型用于合同自动化场景中的 LLM 信息抽取。若不使用合同自动化功能, 可跳过此步。
+> 此功能为可选增强。当前 RapidOCR 已覆盖 Windows 全部 OCR 需求，Docker 方案仅在需要 PaddleOCR-VL 版面分析能力时使用。
 
-## 4. 配置
+---
 
-### 4.1 环境变量
+## 7. 离线部署
+
+适用于工厂内网等无外网环境。
+
+### 7.1 在有网机器上准备离线包
 
 ```bash
-# 复制环境变量模板
+# 1. 导出 pip 包
+pip download -r requirements.txt -d offline_packages/
+pip download torch torchvision --index-url https://download.pytorch.org/whl/cu126 -d offline_packages/
+
+# 2. 导出 Ollama 模型
+# Ollama 模型位于 ~/.ollama/models/，直接复制整个目录
+
+# 3. 导出 HF 缓存
+# 位于 ~/.cache/huggingface/hub/，直接复制
+
+# 4. 导出 repo models/
+# 位于 visionocr-pro/models/，直接复制
+```
+
+### 7.2 在目标机器上还原
+
+```bash
+# 1. 复制代码仓库（U盘/内网 git）
+# 2. 创建 venv + 离线安装
+python -m venv .venv
+.venv\Scripts\activate   # Windows
+pip install --no-index --find-links=offline_packages/ -r requirements.txt
+
+# 3. 还原 Ollama 模型 → 复制到 ~/.ollama/models/
+# 4. 还原 HF 缓存 → 复制到 ~/.cache/huggingface/hub/
+# 5. 还原 repo models/ → 复制到 visionocr-pro/models/
+
+# 6. 启动
+run.bat  # 或 python app.py
+```
+
+---
+
+## 8. 配置
+
+### 8.1 环境变量
+
+```bash
 cp .env.example .env
 ```
 
-编辑 `.env`, 按需填入:
+按需填入 API 密钥（云端 LLM 兜底）、SDK 路径等。纯本地使用无需修改。
 
-- API 密钥 (如使用云端 OCR/LLM 服务)
-- SDK 路径 (如本地 SDK 部署)
-- 其他服务连接信息
+### 8.2 应用配置 (config.yaml)
 
-### 4.2 应用配置
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `company.name` | 苏州锐新视科技有限公司 | 合同方向判定依据 |
+| `company.aliases` | [锐新视, RXS] | 公司别名 |
+| `llm.ollama.model` | qwen3-vl:8b | 本地 LLM 模型 |
+| `ocr.confidence_threshold` | 0.75 | OCR 置信度拦截阈值 |
+| `ocr.default_engine` | auto | 默认 OCR 引擎 |
+| `camera.type` | opencv | 相机类型 |
 
-编辑 `config.yaml`:
+---
 
-- `company_name`: 公司名称 (用于报告输出)
-- `camera_type`: 相机类型 (根据实际硬件选择)
-- 其他业务参数按需调整
+## 9. 验证
 
-## 5. 验证
-
-### 5.1 功能验证
-
-```bash
-python app.py
-```
-
-1. 浏览器自动打开 `http://localhost:7860`
-2. 切换到 **OCR** 标签页
-3. 上传任意含文字的图片
-4. 预期: 5 秒内返回识别结果
-
-### 5.2 单元测试
+### 9.1 快速验证
 
 ```bash
-python -m pytest tests/ -v
+# 启动应用
+run.bat  # Windows
+# python app.py  # Linux
+
+# 浏览器打开 http://localhost:7860
+# OCR Tab → 上传任意含文字图片 → 5秒内返回结果
 ```
 
-预期: 17 个测试全部通过。
+### 9.2 单元测试
 
-### 5.3 CUDA 验证
+```bash
+.venv\Scripts\python -m pytest tests/ -v   # Windows
+# .venv/bin/python -m pytest tests/ -v     # Linux
+```
+
+预期：17 个测试全部通过。
+
+### 9.3 CUDA 验证
 
 ```python
 import torch
-print(torch.cuda.is_available())  # 应输出 True
-print(torch.cuda.get_device_name(0))  # 应输出 GPU 型号
+print(torch.cuda.is_available())       # True
+print(torch.cuda.get_device_name(0))   # GPU 型号
 ```
 
-## 6. 故障排除
+### 9.4 Ollama 验证
+
+```bash
+ollama list              # 应显示 qwen3-vl:8b
+ollama run qwen3-vl:8b "hello"   # 应返回响应
+```
+
+---
+
+## 10. 故障排除
 
 | 问题 | 原因 | 解决方案 |
 |------|------|----------|
-| 端口 7860 被占用 | 残留的 Python 进程未退出 | Windows: `taskkill /F /IM python.exe`; Linux: `fuser -k 7860/tcp` |
-| `torch.cuda.is_available()` 返回 False | CUDA 驱动未安装或版本不匹配 | 安装/更新 NVIDIA 驱动至支持 CUDA 12.x 的版本 |
-| Ollama 连接失败 | Ollama 服务未启动 | 运行 `ollama serve` 启动服务, 再重试 |
-| Windows 下 paddle DLL 报错 | cudnn DLL 与 torch 冲突 | **预期行为**, 无需修复。Windows 下使用 RapidOCR 即可 |
-| pip 安装超时 | 网络问题 | 使用镜像源: `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple` |
-| Python 3.14 下依赖安装失败 | 包生态尚未支持 3.14 | 卸载 3.14, 安装 Python 3.11-3.13 |
+| 端口 7860 被占用 | 残留进程 | Win: `taskkill /F /IM python.exe`; Linux: `fuser -k 7860/tcp` |
+| CUDA 不可用 | 驱动过旧 | 更新 NVIDIA 驱动至 ≥ 525 |
+| Ollama 连接失败 | 服务未启动 | `ollama serve` 或重启 Ollama Desktop |
+| paddle DLL 报错 (Win) | 预期行为 | 忽略，使用 RapidOCR |
+| pip 超时 | 网络问题 | `-i https://pypi.tuna.tsinghua.edu.cn/simple` |
+| Python 3.14 安装失败 | 不支持 | 卸载 3.14，安装 3.11-3.13 |
+| setup.bat 找不到 Python | 未加入 PATH | 重新安装 Python 勾选 "Add to PATH" |
+| HF 模型下载慢 | 国内网络 | 脚本已自动使用 hf-mirror.com |
 
-## 7. 常见问题
+---
 
-**Q: Windows 下为什么不能装 paddlepaddle-gpu?**
+## 11. 常见问题
 
-A: PaddlePaddle 在 Windows 上捆绑的 cudnn DLL 与 PyTorch 自带的 cudnn 版本冲突, 导致 `torch.cuda.is_available()` 返回 False 或运行时崩溃。Windows 下 RapidOCR 已覆盖全部 OCR 需求, 无需 PaddleOCR。
+**Q: 一键脚本需要管理员权限吗？**
 
-**Q: 为什么不支持 Python 3.14?**
+A: 不需要。所有操作在用户目录内完成（venv、pip、ollama 均为用户级安装）。
 
-A: Python 3.14 发布时间较新, 主流科学计算和深度学习包 (torch, paddle, onnxruntime 等) 尚未发布兼容 wheel, pip 安装会失败或回退到源码编译。请使用 3.11-3.13。
+**Q: 仓库文件夹为什么有 1.6GB？**
 
-**Q: 开发机的 venv 路径是什么?**
+A: `models/ovis-ocr2` 权重文件（已 gitignore，不推送到 GitHub）。代码本身 <5MB。
 
-A: 开发者机器使用 `C:\Users\user\AppData\Local\hermes\hermes-agent\venv\`。全新部署请忽略此路径, 使用 `python -m venv .venv` 在项目目录内创建独立环境。
+**Q: 能否把所有模型移到仓库内？**
 
-**Q: Ollama 模型 qwen3-vl:8b 有多大? 必须安装吗?**
+A: 不建议。Ollama/transformers 各自管理模型路径，强行移动会破坏自动更新和版本管理机制。参见[第 4 节](#4-模型分布架构)。
 
-A: 约 6.1GB。仅在启用合同自动化 LLM 抽取功能时需要。若只使用 OCR 功能, 可不安装。
+**Q: 换电脑怎么迁移？**
 
-**Q: Jetson 上推理速度如何?**
+A: 新电脑运行 `setup.bat` / `setup.sh` 即可重建全部环境（需联网）。或参见[第 7 节离线部署](#7-离线部署)。
 
-A: 取决于 Jetson 型号和 JetPack 版本。建议启用 TensorRT 加速, 并确保 PyTorch 为 aarch64 CUDA 版本。
+**Q: Docker 方案稳定吗？**
+
+A: Docker Desktop + WSL2 GPU 直通在 NVIDIA 驱动 ≥ 525 环境下稳定。但当前 RapidOCR 已满足 Windows OCR 需求，Docker 为可选增强。
+
+**Q: 为什么不支持 Python 3.14？**
+
+A: torch/paddle/onnxruntime 等核心包尚未发布 3.14 兼容 wheel。请使用 3.11-3.13。
+
+**Q: qwen3-vl:8b 必须安装吗？**
+
+A: 仅合同自动化 LLM 抽取需要。纯 OCR 功能无需安装，可跳过节省 6GB。
 
 ---
 ---
 
-# VisionOCR Pro Deployment Guide
+# VisionOCR Pro Deployment Guide (English)
 
 ## Table of Contents
 
-1. [Hardware Requirements](#1-hardware-requirements)
-2. [Software Prerequisites](#2-software-prerequisites)
-3. [Installation](#3-installation)
-4. [Configuration](#4-configuration)
-5. [Verification](#5-verification)
-6. [Troubleshooting](#6-troubleshooting)
-7. [FAQ](#7-faq)
+1. [One-Click Setup (Recommended)](#1-one-click-setup-recommended)
+2. [Hardware Requirements](#2-hardware-requirements)
+3. [Software Dependency Matrix](#3-software-dependency-matrix)
+4. [Model Distribution Architecture](#4-model-distribution-architecture)
+5. [Manual Installation](#5-manual-installation)
+6. [Docker Option: PaddleOCR on Windows](#6-docker-option-paddleocr-on-windows)
+7. [Offline Deployment](#7-offline-deployment)
+8. [Configuration](#8-configuration)
+9. [Verification](#9-verification)
+10. [Troubleshooting](#10-troubleshooting)
+11. [FAQ](#11-faq)
 
 ---
 
-## 1. Hardware Requirements
+## 1. One-Click Setup (Recommended)
+
+**Prerequisites**: Python 3.11-3.13, Git, and internet access.
+
+```bash
+git clone https://github.com/rxsvision/visionocr-pro.git
+cd visionocr-pro
+
+# Windows: double-click or run in terminal
+setup.bat
+
+# Linux / Jetson:
+chmod +x setup.sh && ./setup.sh
+```
+
+The script automatically handles:
+
+1. Python version detection (3.11-3.13)
+2. Virtual environment creation (`.venv`)
+3. PyTorch (CUDA 12.6) + all project dependencies
+4. Ollama detection → qwen3-vl:8b model pull (~6.1GB)
+5. OvisOCR2 weight download (~1.7GB)
+6. pytest verification
+
+After completion, run `run.bat` (Windows) or `source .venv/bin/activate && python app.py` (Linux).
+
+> First run takes ~15-40 minutes depending on network speed. Subsequent launches are instant.
+
+---
+
+## 2. Hardware Requirements
 
 | Component | Minimum | Recommended | Notes |
 |-----------|---------|-------------|-------|
-| GPU | NVIDIA GPU, 8GB VRAM | NVIDIA GPU, 12GB+ VRAM | Tested: RTX 4070 Ti (12GB) |
-| RAM | 16GB | 32GB | Model loading peaks are memory-intensive |
-| Storage | SSD, 50GB free | NVMe SSD, 100GB+ | Models + Ollama weights ~10GB |
-| CPU | 4 cores | 8 cores+ | Image preprocessing runs on CPU |
+| GPU | NVIDIA, 8GB VRAM | RTX 4070 Ti 12GB+ | Must support CUDA 12.x |
+| RAM | 16GB | 32GB | Model loading peaks are high |
+| Storage | SSD, 50GB free | NVMe, 100GB+ | Total models ~10-15GB |
+| CPU | 4 cores | 8 cores+ | Image preprocessing on CPU |
+| Network | Required for first setup | — | Fully offline after setup |
 
-> Note: Without an NVIDIA GPU the system falls back to CPU inference, but latency increases significantly (~15-30s per OCR image). Not recommended for production.
+> Without NVIDIA GPU, falls back to CPU inference (~15-30s/image). Not recommended for production.
 
-## 2. Software Prerequisites
+---
 
-| Software | Version | Purpose | Notes |
-|----------|---------|---------|-------|
-| Python | 3.11 - 3.13 | Runtime | **3.14 NOT supported** (empty package ecosystem, no wheels) |
-| CUDA Driver | 12.x | GPU acceleration | Driver only; no separate CUDA Toolkit needed |
-| Git | 2.x+ | Source control | -- |
-| Ollama | Latest | Local LLM inference | Contract automation LLM extraction engine |
-| pip | Latest | Package management | Bundled with Python |
+## 3. Software Dependency Matrix
 
-## 3. Installation
+### 3.1 Required (install manually)
 
-### 3.1 Windows
+| Software | Version | Purpose | Download |
+|----------|---------|---------|----------|
+| Python | 3.11 - 3.13 | Runtime | [python.org](https://www.python.org/downloads/) |
+| NVIDIA Driver | ≥ 525 (CUDA 12.x) | GPU acceleration | [nvidia.com/drivers](https://www.nvidia.com/drivers/) |
+| Git | 2.x+ | Source control | [git-scm.com](https://git-scm.com/) |
+| Ollama | Latest | Local LLM inference | [ollama.com](https://ollama.com/download) |
 
-```bat
-:: 1. Clone the repository
-git clone <repo-url> visionocr-pro
-cd visionocr-pro
+### 3.2 Auto-installed (handled by setup script)
 
-:: 2. Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate
+| Package/Model | Version | Purpose | Method |
+|---------------|---------|---------|--------|
+| PyTorch | ≥ 2.0 + cu126 | Inference framework | pip (torch index) |
+| Gradio | ≥ 5.0 | Web UI | pip |
+| RapidOCR | ≥ 1.3 | Lightweight OCR | pip |
+| transformers | ≥ 4.40 | Grounding DINO loading | pip |
+| onnxruntime-gpu | ≥ 1.17 | RapidOCR acceleration | pip |
+| OvisOCR2 weights | — | High-accuracy doc OCR | download_models.py |
+| qwen3-vl:8b | — | Contract LLM extraction | ollama pull |
+| Grounding DINO | — | Zero-shot detection | transformers auto-cache |
 
-:: 3. Install PyTorch (CUDA 12.6)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+### 3.3 Optional
 
-:: 4. Install project dependencies
-pip install -r requirements.txt
+| Software | When | Purpose |
+|----------|------|---------|
+| Docker Desktop + WSL2 | PaddleOCR needed on Windows | Containerized PaddleOCR-VL |
+| PaddlePaddle GPU | Linux only | PaddleOCR-VL engine (no conflict on Linux) |
+| CUDA Toolkit | Custom operator compilation | Runtime only needs driver, not Toolkit |
+
+### 3.4 Not Supported
+
+| Item | Reason |
+|------|--------|
+| Python 3.14 | No wheels for torch/paddle/onnxruntime |
+| PaddlePaddle GPU (Windows) | cudnn DLL conflict with PyTorch, unfixable |
+| AMD / Intel GPU | Project depends on CUDA ecosystem |
+
+---
+
+## 4. Model Distribution Architecture
+
+Model weights are **not** centralized in the repository. Each runtime manages its own:
+
+```
+Code repository (visionocr-pro/)
+└── models/                  ← Only unmanaged weights
+    └── ovis-ocr2/           1.7GB   (download_models.py)
+
+Ollama runtime (~/.ollama/models/)
+└── qwen3-vl:8b             5.8GB   (ollama pull/list)
+
+HuggingFace cache (~/.cache/huggingface/hub/)
+├── grounding-dino-base      892MB   (transformers auto)
+└── PP-OCRv6_medium          ~200MB  (paddle auto)
+
+PaddleOCR cache (~/.paddleocr/)
+└── legacy models            41MB    (paddleocr auto)
+
+pip embedded (site-packages/)
+└── RapidOCR ONNX            ~50MB   (pip install)
+
+Code built-in
+└── PatchCore WideResNet50   ~100MB  (torchvision first-run)
+
+Total: ~9GB
 ```
 
-**Critical Windows notes:**
+**Why not merge into one folder?** Each tool (Ollama, transformers) only recognizes its own path. Moving models breaks auto-update and version deduplication. The repo stays lightweight (<5MB code + 1.7GB unmanaged weights).
 
-- **Do NOT install paddlepaddle-gpu.** On Windows, PaddlePaddle's bundled cudnn DLLs conflict with PyTorch, breaking torch CUDA initialization. OCR on Windows is handled by RapidOCR, which provides full functionality without PaddleOCR.
-- Launch the application using `run.bat` in the project root. This script is ASCII-only and points directly to the venv Python interpreter, avoiding path and encoding issues.
+---
+
+## 5. Manual Installation
+
+### 5.1 Windows
 
 ```bat
-:: Launch the application
+git clone https://github.com/rxsvision/visionocr-pro.git && cd visionocr-pro
+python -m venv .venv
+.venv\Scripts\activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+pip install -r requirements.txt
+:: Install Ollama from https://ollama.com/download
+ollama pull qwen3-vl:8b
+python scripts/download_models.py ovisocr2
 run.bat
 ```
 
-### 3.2 Linux / NVIDIA Jetson
+**Do NOT install paddlepaddle-gpu on Windows.** See [Docker option](#6-docker-option-paddleocr-on-windows) if PaddleOCR is needed.
+
+### 5.2 Linux / Jetson
 
 ```bash
-# 1. Clone the repository
-git clone <repo-url> visionocr-pro
-cd visionocr-pro
-
-# 2. Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. Install PyTorch (CUDA 12.6)
+git clone https://github.com/rxsvision/visionocr-pro.git && cd visionocr-pro
+python3 -m venv .venv && source .venv/bin/activate
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-
-# 4. Install project dependencies
 pip install -r requirements.txt
-
-# 5. Install PaddlePaddle GPU (works correctly on Linux)
-pip install paddlepaddle-gpu
-
-# 6. Launch the application
+pip install paddlepaddle-gpu  # Linux: no conflict
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull qwen3-vl:8b
+python scripts/download_models.py ovisocr2
 python app.py
 ```
 
-**Linux/Jetson notes:**
+---
 
-- paddlepaddle-gpu has no conflicts with PyTorch on Linux. Once installed, the PaddleOCR-VL engine becomes available for higher-accuracy layout analysis.
-- For Jetson devices, ensure the correct JetPack version is flashed and the CUDA driver is compatible with PyTorch cu126.
+## 6. Docker Option: PaddleOCR on Windows
 
-### 3.3 Install Ollama and Model
+Windows cannot run PaddlePaddle GPU natively (DLL conflict). Docker Desktop + WSL2 GPU passthrough provides a workaround.
 
-```bash
-# Install Ollama (see https://ollama.com for platform-specific installers)
+### Prerequisites
 
-# Pull the contract automation LLM model (~6.1GB)
-ollama pull qwen3-vl:8b
-```
+- Docker Desktop 4.x (WSL2 backend)
+- NVIDIA Driver ≥ 525
+- GPU support enabled in Docker Desktop settings
 
-This model powers the contract automation LLM extraction feature. Skip this step if contract automation is not needed.
-
-## 4. Configuration
-
-### 4.1 Environment Variables
+### Usage
 
 ```bash
-# Copy the environment template
-cp .env.example .env
+docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
+docker run --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
 ```
 
-Edit `.env` and fill in as needed:
+> Optional enhancement. RapidOCR covers all Windows OCR needs. Docker is only for PaddleOCR-VL layout analysis.
 
-- API keys (if using cloud OCR/LLM services)
-- SDK paths (if deploying local SDKs)
-- Other service connection details
+---
 
-### 4.2 Application Config
+## 7. Offline Deployment
+
+For air-gapped factory networks.
+
+### 7.1 Prepare on internet-connected machine
+
+```bash
+pip download -r requirements.txt -d offline_packages/
+pip download torch torchvision --index-url https://download.pytorch.org/whl/cu126 -d offline_packages/
+# Copy: ~/.ollama/models/, ~/.cache/huggingface/hub/, visionocr-pro/models/
+```
+
+### 7.2 Restore on target machine
+
+```bash
+python -m venv .venv && .venv\Scripts\activate
+pip install --no-index --find-links=offline_packages/ -r requirements.txt
+# Restore Ollama models → ~/.ollama/models/
+# Restore HF cache → ~/.cache/huggingface/hub/
+# Restore repo models → visionocr-pro/models/
+run.bat
+```
+
+---
+
+## 8. Configuration
+
+```bash
+cp .env.example .env   # API keys (optional, for cloud fallback)
+```
 
 Edit `config.yaml`:
 
-- `company_name`: Your company name (used in report output)
-- `camera_type`: Camera type (select based on actual hardware)
-- Adjust other business parameters as needed
+| Key | Default | Description |
+|-----|---------|-------------|
+| `company.name` | — | Your company name (contract direction judgment) |
+| `llm.ollama.model` | qwen3-vl:8b | Local LLM model |
+| `ocr.confidence_threshold` | 0.75 | OCR confidence gate |
+| `ocr.default_engine` | auto | Default OCR engine |
+| `camera.type` | opencv | Camera type |
 
-## 5. Verification
+---
 
-### 5.1 Functional Verification
-
-```bash
-python app.py
-```
-
-1. Browser opens automatically at `http://localhost:7860`
-2. Navigate to the **OCR** tab
-3. Upload any image containing text
-4. Expected: recognition result returned within 5 seconds
-
-### 5.2 Unit Tests
+## 9. Verification
 
 ```bash
-python -m pytest tests/ -v
+# App launch
+run.bat  # → http://localhost:7860
+
+# Unit tests
+.venv\Scripts\python -m pytest tests/ -v   # 17 tests pass
+
+# CUDA
+python -c "import torch; print(torch.cuda.is_available())"  # True
+
+# Ollama
+ollama list   # shows qwen3-vl:8b
 ```
 
-Expected: all 17 tests pass.
+---
 
-### 5.3 CUDA Verification
-
-```python
-import torch
-print(torch.cuda.is_available())  # Should print True
-print(torch.cuda.get_device_name(0))  # Should print your GPU model
-```
-
-## 6. Troubleshooting
+## 10. Troubleshooting
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
-| Port 7860 already in use | Stale Python process | Windows: `taskkill /F /IM python.exe`; Linux: `fuser -k 7860/tcp` |
-| `torch.cuda.is_available()` returns False | CUDA driver missing or version mismatch | Install/update NVIDIA driver to a CUDA 12.x-compatible version |
-| Ollama connection refused | Ollama service not running | Run `ollama serve` to start the daemon, then retry |
-| Paddle DLL error on Windows | cudnn DLL conflict with torch | **Expected behavior**, no fix needed. Use RapidOCR on Windows |
-| pip install timeout | Network issue | Use mirror: `pip install -i https://pypi.tuna.tsinghua.edu.cn/simple` |
-| Dependency install fails on Python 3.14 | Package ecosystem not yet available | Uninstall 3.14; install Python 3.11-3.13 |
+| Port 7860 in use | Stale process | `taskkill /F /IM python.exe` or `fuser -k 7860/tcp` |
+| CUDA unavailable | Driver too old | Update NVIDIA driver ≥ 525 |
+| Ollama refused | Service not running | `ollama serve` or restart Ollama |
+| Paddle DLL error (Win) | Expected | Ignore; use RapidOCR |
+| pip timeout | Network | `-i https://pypi.tuna.tsinghua.edu.cn/simple` |
+| Python 3.14 fails | Unsupported | Install 3.11-3.13 |
+| HF download slow | China network | Script auto-uses hf-mirror.com |
 
-## 7. FAQ
+---
 
-**Q: Why can't I install paddlepaddle-gpu on Windows?**
+## 11. FAQ
 
-A: PaddlePaddle ships cudnn DLLs on Windows that conflict with PyTorch's bundled cudnn, causing `torch.cuda.is_available()` to return False or runtime crashes. RapidOCR covers all OCR needs on Windows without PaddleOCR.
+**Q: Does setup require admin privileges?**
 
-**Q: Why is Python 3.14 not supported?**
+A: No. All operations are user-level (venv, pip, ollama).
 
-A: Python 3.14 is too new; major scientific computing and deep learning packages (torch, paddle, onnxruntime, etc.) have not published compatible wheels. pip installs will fail or fall back to source compilation. Use Python 3.11-3.13.
+**Q: Why is the repo folder 1.6GB?**
 
-**Q: What is the developer machine's venv path?**
+A: `models/ovis-ocr2` weights (gitignored, not pushed to GitHub). Code itself is <5MB.
 
-A: The developer machine uses `C:\Users\user\AppData\Local\hermes\hermes-agent\venv\`. For fresh deployments, ignore this path and create an isolated environment with `python -m venv .venv` inside the project directory.
+**Q: Can I move all models into the repo?**
 
-**Q: How large is the Ollama model qwen3-vl:8b? Is it required?**
+A: Not recommended. Ollama/transformers manage their own paths. See [Section 4](#4-model-distribution-architecture).
 
-A: Approximately 6.1GB. It is only needed for the contract automation LLM extraction feature. If you only use OCR, you can skip it.
+**Q: How to migrate to a new computer?**
 
-**Q: What inference speed can I expect on Jetson?**
+A: Run `setup.bat`/`setup.sh` on the new machine (requires internet). Or see [Offline Deployment](#7-offline-deployment).
 
-A: Depends on the Jetson model and JetPack version. Enable TensorRT acceleration and ensure PyTorch is the aarch64 CUDA build for best results.
+**Q: Is qwen3-vl:8b required?**
+
+A: Only for contract automation LLM extraction. Pure OCR works without it (saves 6GB).

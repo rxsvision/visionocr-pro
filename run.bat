@@ -1,5 +1,10 @@
 @echo off
 title VisionOCR Pro
-cd /d D:\rxs-repos\visionocr-pro
-"C:\Users\user\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe" app.py %*
+cd /d "%~dp0"
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" app.py %*
+) else (
+    echo [ERROR] .venv not found. Run setup.bat first.
+    pause
+)
 if errorlevel 1 pause

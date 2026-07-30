@@ -71,7 +71,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 
 ### 模型依赖
 
-所有模型权重存放在本地 `models/` 目录（已 gitignore），不随代码仓库分发。
+模型权重分布在各运行时管理目录中，不随代码仓库分发。完整架构见 [DEPLOY.md](DEPLOY.md#4-模型分布架构)。
 
 | 模型 | 用途 | 显存占用 | 权重大小 | 获取方式 |
 |------|------|----------|----------|----------|
@@ -87,53 +87,48 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 
 ### 安装与使用
 
-> 完整部署指南（含硬件要求、故障排查、FAQ）见 [DEPLOY.md](DEPLOY.md)。
+> 完整部署指南（含硬件要求、模型架构、离线部署、故障排查）见 [DEPLOY.md](DEPLOY.md)。
 
 #### 环境要求
 
-- Windows 10/11 或 Linux (Jetson 兼容)
-- Python 3.11+
-- NVIDIA GPU + CUDA 12.x 驱动
-- Ollama (本地 LLM)
+| 必装 | 版本 | 获取 |
+|------|------|------|
+| Python | 3.11 - 3.13（不支持 3.14） | [python.org](https://www.python.org/downloads/) |
+| NVIDIA 驱动 | ≥ 525（CUDA 12.x） | [nvidia.com](https://www.nvidia.com/drivers/) |
+| Git | 2.x+ | [git-scm.com](https://git-scm.com/) |
+| Ollama | 最新版 | [ollama.com](https://ollama.com/download) |
 
-#### 快速开始
+#### 快速开始（一键部署）
 
 ```bash
 # 1. 克隆仓库
 git clone https://github.com/rxsvision/visionocr-pro.git
 cd visionocr-pro
 
-# 2. 创建虚拟环境
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # Linux
+# 2. 一键安装（自动完成: venv → PyTorch → 依赖 → 模型 → 验证）
+setup.bat          # Windows: 双击或命令行运行
+# ./setup.sh       # Linux / Jetson
 
-# 3. 安装依赖
-pip install -r requirements.txt
+# 3. 启动
+run.bat            # Windows
+# source .venv/bin/activate && python app.py   # Linux
 
-# 4. 安装 PyTorch (CUDA 12.6)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-
-# 5. 安装 PaddlePaddle GPU (可选, 仅 Linux/Jetson)
-# ⚠ Windows 下不要安装 paddlepaddle-gpu (cudnn DLL 与 torch 冲突)
-# Windows 用户跳过此步, RapidOCR 自动兜底
-pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-
-# 6. 配置环境变量 (可选, 用于 API 密钥/SDK 路径)
-cp .env.example .env
-# 编辑 .env 填入实际值
-
-# 7. 拉取 LLM 模型
-ollama pull qwen3-vl:8b
-
-# 8. 下载 OCR 模型 (OvisOCR2)
-python scripts/download_models.py ovisocr2
-
-# 9. 启动应用
-python app.py
-# Windows 也可双击 run.bat
 # 浏览器自动打开 http://localhost:7860
 ```
+
+> 首次运行约 15-40 分钟（下载模型），后续启动无需重复。全程无需管理员权限。
+
+#### 模型分布
+
+模型权重由各运行时工具管理，不集中在仓库内（[详细说明](DEPLOY.md#4-模型分布架构)）：
+
+| 模型 | 大小 | 存放位置 | 管理方式 |
+|------|------|----------|----------|
+| qwen3-vl:8b | 5.8 GB | `~/.ollama/models/` | `ollama pull` |
+| OvisOCR2 | 1.7 GB | `models/ovis-ocr2/` | `download_models.py` |
+| Grounding DINO | 892 MB | `~/.cache/huggingface/` | transformers 自动 |
+| RapidOCR | ~50 MB | pip 包内嵌 | `pip install` 自带 |
+| PatchCore | ~100 MB | 代码内置 | torchvision 首次下载 |
 
 #### 配置
 
@@ -173,6 +168,8 @@ visionocr-pro/
 ├── config.yaml             # 全局配置 (支持 ${ENV_VAR:-default})
 ├── .env.example            # 环境变量模板 (API密钥/SDK路径)
 ├── run.bat                 # Windows 启动器 (ASCII-only)
+├── setup.bat               # Windows 一键部署脚本
+├── setup.sh                # Linux 一键部署脚本
 ├── requirements.txt        # Python 依赖
 ├── DEPLOY.md               # 部署指南 (中英双语)
 ├── core/                   # 核心业务逻辑
@@ -266,7 +263,7 @@ Key advantages:
 
 ### Model Dependencies
 
-All model weights are stored locally in `models/` (gitignored) and are not distributed with the code repository.
+Model weights are distributed across runtime-managed locations (not bundled in the code repo). See [DEPLOY.md](DEPLOY.md#4-model-distribution-architecture) for the full architecture.
 
 | Model | Purpose | VRAM | Size | Acquisition |
 |-------|---------|------|------|-------------|
@@ -280,23 +277,41 @@ All model weights are stored locally in `models/` (gitignored) and are not distr
 
 > **Hardware**: RTX 4070 Ti (12 GB) runs all engines except HunyuanOCR, which requires 24 GB+ VRAM (RTX 4090 / A5000).
 
-### Quick Start
+### Quick Start (One-Click)
 
-See [DEPLOY.md](DEPLOY.md) for full hardware/software requirements and troubleshooting.
+See [DEPLOY.md](DEPLOY.md) for full hardware/software requirements, model architecture, and offline deployment.
+
+**Prerequisites**: Python 3.11-3.13, NVIDIA driver ≥ 525, Git, [Ollama](https://ollama.com/download).
 
 ```bash
+# 1. Clone
 git clone https://github.com/rxsvision/visionocr-pro.git
 cd visionocr-pro
-python -m venv .venv && .venv\Scripts\activate
-pip install -r requirements.txt
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-# ⚠ Windows: do NOT install paddlepaddle-gpu (cudnn DLL conflict with torch)
-# Linux/Jetson: pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-ollama pull qwen3-vl:8b
-python scripts/download_models.py ovisocr2
-python app.py
+
+# 2. One-click setup (auto: venv → PyTorch → deps → models → verify)
+setup.bat          # Windows: double-click or run in terminal
+# ./setup.sh       # Linux / Jetson
+
+# 3. Launch
+run.bat            # Windows
+# source .venv/bin/activate && python app.py   # Linux
+
 # Opens http://localhost:7860
 ```
+
+> First run takes ~15-40 min (model downloads). No admin privileges required.
+
+**Model distribution**: Weights are managed by their respective runtimes, not bundled in the repo ([details](DEPLOY.md#4-model-distribution-architecture)):
+
+| Model | Size | Location | Managed by |
+|-------|------|----------|-----------|
+| qwen3-vl:8b | 5.8 GB | `~/.ollama/models/` | `ollama pull` |
+| OvisOCR2 | 1.7 GB | `models/ovis-ocr2/` | `download_models.py` |
+| Grounding DINO | 892 MB | `~/.cache/huggingface/` | transformers auto |
+| RapidOCR | ~50 MB | pip package | `pip install` |
+| PatchCore | ~100 MB | Built-in | torchvision first-run |
+
+> **Windows note**: Do NOT install paddlepaddle-gpu (cudnn DLL conflict). RapidOCR covers all OCR needs. For PaddleOCR-VL, see [Docker option](DEPLOY.md#6-docker-option-paddleocr-on-windows).
 
 ### License
 
