@@ -17,8 +17,9 @@ torchvision>=0.15
 onnxruntime-gpu>=1.17
 
 # PaddlePaddle GPU (PaddleOCR 引擎)
-# 安装: pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-paddlepaddle-gpu>=3.0
+# ⚠ Windows 下不可用 (cudnn DLL 与 torch 冲突), 仅 Linux/Jetson 安装:
+# pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+# paddlepaddle-gpu>=3.0
 paddleocr>=2.7
 
 # HuggingFace transformers (Grounding DINO 零样本检测)

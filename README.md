@@ -18,7 +18,8 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 - **多引擎自动路由** — 场景分类器自动选择最优 OCR 引擎，无需人工干预
 - **分级 LLM 抽取** — 本地 Ollama 优先、云端 API 兜底、规则引擎保底，三级容错
 - **傻瓜式操作** — 工人一键拍照即可获得 OK/NG 判定，无需调参
-- **生产级质量管控** — 置信度阈值拦截、审计日志持久化、金额勾稽校验
+- **工人/工程师双模式** — 顶部 Toggle 切换，工人模式隐藏所有调参，工程师模式完整控制
+- **生产级质量管控** — 置信度阈值拦截、审计日志持久化、金额勾稽校验、启动自动备份数据库
 
 ### 技术栈
 
@@ -86,6 +87,8 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 
 ### 安装与使用
 
+> 完整部署指南（含硬件要求、故障排查、FAQ）见 [DEPLOY.md](DEPLOY.md)。
+
 #### 环境要求
 
 - Windows 10/11 或 Linux (Jetson 兼容)
@@ -111,17 +114,24 @@ pip install -r requirements.txt
 # 4. 安装 PyTorch (CUDA 12.6)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-# 5. 安装 PaddlePaddle GPU (可选, PaddleOCR 引擎需要)
+# 5. 安装 PaddlePaddle GPU (可选, 仅 Linux/Jetson)
+# ⚠ Windows 下不要安装 paddlepaddle-gpu (cudnn DLL 与 torch 冲突)
+# Windows 用户跳过此步, RapidOCR 自动兜底
 pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 
-# 6. 拉取 LLM 模型
+# 6. 配置环境变量 (可选, 用于 API 密钥/SDK 路径)
+cp .env.example .env
+# 编辑 .env 填入实际值
+
+# 7. 拉取 LLM 模型
 ollama pull qwen3-vl:8b
 
-# 7. 下载 OCR 模型 (OvisOCR2)
+# 8. 下载 OCR 模型 (OvisOCR2)
 python scripts/download_models.py ovisocr2
 
-# 8. 启动应用
+# 9. 启动应用
 python app.py
+# Windows 也可双击 run.bat
 # 浏览器自动打开 http://localhost:7860
 ```
 
@@ -159,12 +169,16 @@ python finetune/export_onnx.py
 
 ```
 visionocr-pro/
-├── app.py                  # 应用入口
-├── config.yaml             # 全局配置
+├── app.py                  # 应用入口 (结构化日志 + 启动检查)
+├── config.yaml             # 全局配置 (支持 ${ENV_VAR:-default})
+├── .env.example            # 环境变量模板 (API密钥/SDK路径)
+├── run.bat                 # Windows 启动器 (ASCII-only)
 ├── requirements.txt        # Python 依赖
+├── DEPLOY.md               # 部署指南 (中英双语)
 ├── core/                   # 核心业务逻辑
-│   ├── config.py           #   配置加载
-│   ├── database.py         #   SQLite 数据层 + 审计日志
+│   ├── config.py           #   配置加载 + 环境变量替换
+│   ├── database.py         #   SQLite 数据层 + 审计日志 + 自动备份
+│   ├── warmup.py           #   引擎预热 (消除冷启动)
 │   ├── contract_extractor.py # 合同要素抽取 (LLM + 规则)
 │   ├── payment_store.py    #   应收/回款数据操作
 │   ├── risk_engine.py      #   合同风险扫描
@@ -182,21 +196,22 @@ visionocr-pro/
 ├── engines/                # 推理引擎层
 │   ├── base.py             #   引擎基类 + 状态机
 │   ├── registry.py         #   引擎注册表 + LRU 显存管理
-│   ├── ocr/                #   OCR 引擎 (6个)
+│   ├── ocr/                #   OCR 引擎 (6个 + subprocess worker)
 │   ├── vision/             #   视觉检测引擎 (6个)
 │   ├── pose/               #   姿态/行为引擎 (3个)
 │   └── llm/                #   LLM 引擎 (Ollama + API)
 ├── ui/                     # Gradio UI 层
-│   ├── main.py             #   主布局 + 主题
+│   ├── main.py             #   主布局 + 工人/工程师模式切换
+│   ├── safe_yield.py       #   Generator 异常防御装饰器
 │   ├── tab_ocr.py          #   OCR 识别 Tab
 │   ├── tab_contract.py     #   合同自动化 Tab
 │   ├── tab_qc.py           #   工业质检 Tab
 │   ├── tab_behavior.py     #   行为分析 Tab (P2)
-│   └── tab_settings.py     #   设置 Tab
+│   └── tab_settings.py     #   设置 + 引擎健康面板
 ├── finetune/               # PP-OCRv6 微调工具链
 ├── scripts/                # 辅助脚本
 ├── scenarios/              # 场景配置
-├── tests/                  # 测试
+├── tests/                  # pytest 单元测试 (17 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 
@@ -232,7 +247,8 @@ Key advantages:
 - **Multi-engine auto-routing** — A scene classifier selects the optimal OCR engine automatically
 - **Tiered LLM extraction** — Local Ollama first, cloud API fallback, regex engine as last resort
 - **One-click operation** — Workers get OK/NG verdicts from a single photo, no parameter tuning
-- **Production-grade QA** — Confidence threshold gating, persistent audit trail, amount reconciliation
+- **Worker/Engineer dual mode** — Top-level toggle hides all tuning in worker mode; full control in engineer mode
+- **Production-grade QA** — Confidence threshold gating, persistent audit trail, amount reconciliation, automatic DB backup on startup
 
 ### Tech Stack
 
@@ -266,12 +282,16 @@ All model weights are stored locally in `models/` (gitignored) and are not distr
 
 ### Quick Start
 
+See [DEPLOY.md](DEPLOY.md) for full hardware/software requirements and troubleshooting.
+
 ```bash
 git clone https://github.com/rxsvision/visionocr-pro.git
 cd visionocr-pro
 python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# ⚠ Windows: do NOT install paddlepaddle-gpu (cudnn DLL conflict with torch)
+# Linux/Jetson: pip install paddlepaddle-gpu -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 ollama pull qwen3-vl:8b
 python scripts/download_models.py ovisocr2
 python app.py

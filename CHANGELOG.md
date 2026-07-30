@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-07-31
+
+### Added
+
+- **Structured Logging**: RotatingFileHandler (10 MB x 5), 47 print-to-logger migration across 12 modules
+- **Engine Warmup**: Pre-load default OCR engine before UI opens, eliminating cold-start delay for workers
+- **SQLite Auto-Backup**: `backup_db()` using sqlite3 backup API on startup, 5-copy rotation in `data/backups/`
+- **safe_generator Decorator**: Catches unhandled exceptions in Gradio generators, logs traceback, yields user-visible error instead of silent UI freeze
+- **Worker/Engineer Mode Toggle**: Top-level Radio switch — worker mode hides all tuning params and non-essential tabs; engineer mode exposes full control
+- **Config Env Var Substitution**: `${VAR:-default}` pattern in config.yaml, `.env.example` template for secrets/SDK paths
+- **pytest Skeleton**: 17 unit tests (config, database, safe_yield) with shared fixtures
+- **PaddleOCR Subprocess Worker**: `_paddle_worker.py` isolates paddle from torch cudnn conflict; ready for Linux/Jetson deployment
+- **run.bat**: ASCII-only Windows launcher pointing to venv Python
+- **DEPLOY.md**: Bilingual deployment guide with hardware/software requirements and troubleshooting
+
+### Fixed
+
+- **FP16 Production Blocker**: Grounding DINO defaults to FP32 (transformers 5.x `dtype` API bug workaround)
+- **Stub Engine Marking**: 7 placeholder engines clearly prefixed `[stub]` in description
+
+### Changed
+
+- Health dashboard: real VRAM monitoring via torch.cuda, stub detection, functional unload-all
+- Config normalization: hardcoded paths/credentials replaced with env var references
+- PaddleOCR-VL: auto-fallback to RapidOCR on Windows (paddle 3.x DLL/PIR bugs); subprocess path for Linux
+
 ## [1.0.0] - 2026-07-30
 
 ### Added
