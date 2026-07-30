@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from ui.safe_yield import safe_generator
+
 import json
 import os
 from datetime import date
@@ -310,6 +312,7 @@ def create_tab_contract(config: dict, registry):
 
 
 # ─── 提取回调 (流式进度) ─────────────────────────────────────
+@safe_generator(lambda e: ([], f"[ERROR] 提取异常: {e}"))
 def _extract_contracts(files):
     """Generator: 逐文件处理并 yield 进度, Gradio 自动流式渲染。"""
     if not files:

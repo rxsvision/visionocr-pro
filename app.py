@@ -127,8 +127,9 @@ def main():
         os.environ.setdefault("HF_ENDPOINT", hf_mirror)
 
     try:
-        from core.database import init_db
+        from core.database import init_db, backup_db
         init_db(cfg["data_dir"])
+        backup_db(cfg["data_dir"])
         logger.info("数据库初始化完成")
     except Exception as e:
         logger.critical("数据库初始化失败: %s", e)

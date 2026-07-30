@@ -3,6 +3,8 @@ import time
 import gradio as gr
 from pathlib import Path
 
+from ui.safe_yield import safe_generator
+
 
 def _imread_safe(path: str, flags=None):
     """Unicode 安全的 cv2.imread (Windows 中文路径兼容)。"""
@@ -138,6 +140,8 @@ SCENE_ENGINE_MAP = {
 }
 
 
+@safe_generator(lambda e: (None, f"内部错误: {e}", "—", "—", "—", {},
+                          f"[ERROR] 未捕获异常: {e}"))
 def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enable,
                     pp_enable, pp_clahe, pp_sharpen, pp_upscale, pp_binarize,
                     postprocess_enable, custom_regex):

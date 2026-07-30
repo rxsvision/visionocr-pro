@@ -335,3 +335,48 @@ def log_ocr_audit(data_dir: str, record: dict) -> None:
     except Exception as e:
         # 审计日志写入失败不应阻断主流程
         logger.warning("[AuditLog] 写入失败 (不影响识别): %s", e)
+
+
+def backup_db(data_dir: str, max_backups: int = 5) -> Path | None:
+    """使用 SQLite backup API 创建数据库热备份 (WAL 安全)。
+
+    策略: 启动时调用, 保留最近 max_backups 份, 按时间戳轮转。
+    返回备份文件路径; 数据库不存在或备份失败时返回 None。
+    """
+    import shutil
+    from datetime import datetime
+
+    data_path = Path(data_dir)
+    db_path = data_path / "visionocr.db"
+    if not db_path.exists():
+        logger.debug("[Backup] 数据库不存在, 跳过备份")
+        return None
+
+    backup_dir = data_path / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"visionocr_{ts}.db"
+
+    try:
+        src = sqlite3.connect(str(db_path), timeout=10)
+        dst = sqlite3.connect(str(backup_path))
+        src.backup(dst)
+        dst.close()
+        src.close()
+        logger.info("[Backup] 已创建: %s (%.1f KB)",
+                    backup_path.name, backup_path.stat().st_size / 1024)
+    except Exception as e:
+        logger.warning("[Backup] 备份失败 (不影响运行): %s", e)
+        # 清理可能的残缺文件
+        if backup_path.exists():
+            backup_path.unlink()
+        return None
+
+    # 轮转: 只保留最近 max_backups 份
+    backups = sorted(backup_dir.glob("visionocr_*.db"), reverse=True)
+    for old in backups[max_backups:]:
+        old.unlink()
+        logger.debug("[Backup] 已清理旧备份: %s", old.name)
+
+    return backup_path

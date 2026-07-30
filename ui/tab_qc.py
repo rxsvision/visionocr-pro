@@ -9,6 +9,8 @@ import os
 import tempfile
 from pathlib import Path
 
+from ui.safe_yield import safe_generator
+
 import gradio as gr
 
 from core.config import load_config
@@ -196,6 +198,8 @@ def create_tab_qc(config: dict, registry):
 
 
 # ─── 回调函数 ────────────────────────────────────────────────
+@safe_generator(lambda e: (None, "ERROR", "—", "—", [], "",
+                          f"[ERROR] 未捕获异常: {e}"))
 def _run_detect(image_path, prompt, threshold, mode, pc_product,
                 fusion_enable=False, depth_threshold=0.5, fusion_mode="OR (高召回, 推荐)"):
     """一键检测 (Generator): 流式输出进度日志 + 最终结果。"""
