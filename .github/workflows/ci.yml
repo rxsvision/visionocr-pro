@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install minimal test dependencies
+        run: |
+          python -m pip install --upgrade pip --quiet
+          pip install pytest pyyaml --quiet
+
+      - name: Syntax check (all modules)
+        run: python -m py_compile app.py && python scripts/check_syntax.py
+
+      - name: Run tests
+        run: python -m pytest tests/ -v --tb=short
+
+  lint:
+    name: Encoding & structure check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for non-UTF8 files
+        run: |
+          find . -name "*.py" -not -path "./.venv/*" | while read f; do
+            if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
+              echo "NON-UTF8: $f"
+              exit 1
+            fi
+          done
+          echo "All .py files are valid UTF-8"
+
+      - name: Check no secrets in config
+        run: |
+          if grep -rn "api_key.*=.*['\"][a-zA-Z0-9]" config.yaml .env.example 2>/dev/null | grep -v ':-'; then
+            echo "WARNING: Possible hardcoded secret found"
+            exit 1
+          fi
+          echo "No hardcoded secrets detected"
