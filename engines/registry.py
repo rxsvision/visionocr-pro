@@ -47,7 +47,8 @@ class EngineRegistry:
         ("engines.ocr.mineru", "MinerUEngine"),
         ("engines.ocr.scene_classifier", "SceneClassifierEngine"),
         ("engines.vision.rfdetr", "RFDETREngine"),
-        ("engines.vision.yolo26", "YOLO26Engine"),
+        ("engines.vision.yolo_defect", "YOLODefectEngine"),
+        # ("engines.vision.yolo26", "YOLO26Engine"),  # 边缘轻量检测 stub, 待选型
         ("engines.vision.grounding_dino", "GroundingDINOEngine"),
         ("engines.vision.sam3", "SAM3Engine"),
         ("engines.vision.anomalib_engine", "AnomalibEngine"),

@@ -106,6 +106,10 @@ def _defaults() -> dict:
         },
         "camera": {"type": "opencv", "index": 0},
         "barcode": {"engine": "zbar"},
-        "qc": {"anomaly_algorithm": "dinomaly", "confidence_threshold": 0.5},
+        "qc": {"anomaly_algorithm": "dinomaly", "confidence_threshold": 0.5,
+               "union": {"enable_patchcore": True, "enable_dino": True,
+                         "enable_yolo": True}},
+        "yolo_defect": {"weights": "", "confidence_threshold": 0.25,
+                        "imgsz": 1280},
         "behavior": {"enabled": False},
     }

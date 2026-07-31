@@ -387,9 +387,11 @@ def run_union_detection(registry, image_path: str,
     union_cfg = qc_cfg.get("union", {})
     enable_patchcore = union_cfg.get("enable_patchcore", True)
     enable_dino = union_cfg.get("enable_dino", True)
+    enable_yolo = union_cfg.get("enable_yolo", True)
 
     pc_result = None
     dino_result = None
+    yolo_result = None
     ng_sources = []
 
     # ── 1) PatchCore 表面异常检测 ──
@@ -425,6 +427,27 @@ def run_union_detection(registry, image_path: str,
         elif dino_result.get("verdict") == "NG":
             ng_sources.append("dino")
 
+    # ── 2b) YOLO 结构缺陷检测 (少样本微调, 微观缺陷补位) ──
+    if enable_yolo:
+        yolo_eng = registry.get("yolo_defect")
+        if yolo_eng is not None:
+            if not yolo_eng.is_ready():
+                try:
+                    registry.ensure_loaded("yolo_defect")
+                except Exception as e:
+                    logger.debug("Union/YOLO 加载失败 (可能未训练): %s", e)
+            if yolo_eng.is_ready():
+                from core.infer_stats import Timer
+                with Timer("yolo_defect"):
+                    yolo_result = yolo_eng.infer(image_path)
+                if yolo_result.get("error"):
+                    logger.warning("Union/YOLO 错误: %s", yolo_result["error"])
+                    yolo_result = None
+                elif yolo_result.get("count", 0) > 0:
+                    ng_sources.append("yolo")
+            else:
+                logger.debug("Union: YOLO 跳过 (未就绪/未训练)")
+
     # ── 3) Union OR 判定 ──
     verdict = "NG" if ng_sources else "OK"
 
@@ -443,10 +466,18 @@ def run_union_detection(registry, image_path: str,
         scores = [d["score"] for d in dino_result["detections"]]
         annotated = _draw_detections(annotated, boxes, labels, scores)
 
+    # 叠加检测框 (YOLO 结构缺陷)
+    if yolo_result and yolo_result.get("boxes"):
+        annotated = _draw_detections(annotated,
+                                     yolo_result["boxes"],
+                                     yolo_result["labels"],
+                                     yolo_result["scores"])
+
     # 统一印章 (覆盖 _draw_detections 内部的印章)
     total_ng = len(ng_sources)
-    draw_verdict_badge(annotated, verdict,
-                       count=dino_result.get("count", 0) if dino_result else 0)
+    det_count = (dino_result.get("count", 0) if dino_result else 0) + \
+                (yolo_result.get("count", 0) if yolo_result else 0)
+    draw_verdict_badge(annotated, verdict, count=det_count)
 
     # ── 5) 组装结果 ──
     result = {
@@ -455,6 +486,7 @@ def run_union_detection(registry, image_path: str,
         "ng_sources": ng_sources,
         "patchcore": None,
         "dino": None,
+        "yolo": None,
     }
 
     if pc_result:
@@ -473,11 +505,21 @@ def run_union_detection(registry, image_path: str,
             "rejected_by_size": dino_result.get("rejected_by_size", 0),
         }
 
+    if yolo_result:
+        result["yolo"] = {
+            "count": yolo_result.get("count", 0),
+            "max_score": yolo_result.get("max_score", 0),
+            "boxes": yolo_result.get("boxes", []),
+            "labels": yolo_result.get("labels", []),
+            "scores": yolo_result.get("scores", []),
+        }
+
     logger.info("Union 检测: verdict=%s, sources=%s, pc_score=%.4f, "
-                "dino_count=%d",
+                "dino_count=%d, yolo_count=%d",
                 verdict, ng_sources,
                 pc_result.get("score", 0) if pc_result else -1,
-                dino_result.get("count", 0) if dino_result else -1)
+                dino_result.get("count", 0) if dino_result else -1,
+                yolo_result.get("count", 0) if yolo_result else -1)
 
     return result
 
