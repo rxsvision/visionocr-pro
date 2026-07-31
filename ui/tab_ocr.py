@@ -359,13 +359,22 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
 
     yield (None, "", "—", "—", "—", {}, log(f"▶ 加载引擎: {engine_key} ..."))
     try:
-        engine = registry.ensure_loaded(engine_key)
-        if not engine.is_ready():
-            raise RuntimeError(f"{engine_key} 加载后仍未就绪")
-        yield (None, "", "—", "—", "—", {}, log(f"✓ 引擎就绪: {engine_key}"))
+        from core.resilience import safe_ensure_loaded
+        engine, load_msg = safe_ensure_loaded(registry, engine_key)
+        if engine is None:
+            # 所有降级都失败
+            yield (None, load_msg, "—", engine_key, "—",
+                   {"error": load_msg}, log(f"✗ {load_msg}"))
+            return
+        if load_msg:
+            # 发生了降级, 通知用户
+            engine_key = engine.meta.name
+            yield (None, "", "—", "—", "—", {}, log(f"⚠ {load_msg}"))
+        else:
+            yield (None, "", "—", "—", "—", {}, log(f"✓ 引擎就绪: {engine_key}"))
     except Exception as e:
         yield (None, "", "—", "—", "—", {},
-               log(f"⚠ {engine_key} 加载失败 ({e}), 降级 rapidocr"))
+               log(f"⚠ {engine_key} 加载异常 ({e}), 降级 rapidocr"))
         try:
             engine = registry.ensure_loaded("rapidocr")
             engine_key = "rapidocr"

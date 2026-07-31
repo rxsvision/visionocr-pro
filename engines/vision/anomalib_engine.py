@@ -404,10 +404,25 @@ class AnomalibEngine(BaseEngine):
             transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                  std=[0.229, 0.224, 0.225]),
         ])
-        tensor = transform(pil_final).unsqueeze(0).to(self._device())
+        device = self._device()
+        tensor = transform(pil_final).unsqueeze(0).to(device)
 
-        with torch.no_grad():
-            self._extractor(tensor)
+        try:
+            with torch.no_grad():
+                self._extractor(tensor)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() and device == "cuda":
+                # GPU OOM → 清理显存, 降级 CPU 重试
+                logger.warning("GPU 显存不足, 降级 CPU 推理 (本次)")
+                del tensor
+                torch.cuda.empty_cache()
+                tensor = transform(pil_final).unsqueeze(0).to("cpu")
+                self._extractor.to("cpu")
+                with torch.no_grad():
+                    self._extractor(tensor)
+                self._extractor.to(device)  # 恢复 GPU (下次可能够用)
+            else:
+                raise
 
         # 融合多层特征
         feat2 = self._features["layer2"]  # (1, 512, H/8, W/8)
