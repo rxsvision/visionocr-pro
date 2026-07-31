@@ -1,14 +1,16 @@
 """引擎预热 - 启动时加载默认引擎并执行 dummy 推理, 消除首次操作延迟
 
 设计原则:
-- 在 app.launch() 之前同步执行, 浏览器打开时系统已就绪
-- 仅预热 OCR 默认引擎 (工人最高频操作), 其他引擎按需加载 (LRU)
+- 必要引擎 (OCR 主引擎) 在 app.launch() 之前同步加载, 浏览器打开时即可用
+- 次要引擎 (场景分类/条码/质检) 后台异步加载, 不阻塞启动
 - 预热失败不阻断启动, 降级为按需加载模式
+- 产线开机后第一张图不让工人等
 """
 from __future__ import annotations
 
 import logging
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -18,6 +20,9 @@ logger = logging.getLogger("visionocr.warmup")
 
 # dummy 图像路径 (延迟创建)
 _DUMMY_PATH: str | None = None
+
+# 后台预热状态 (供状态面板查询)
+_background_status: dict[str, str] = {}  # {engine_name: "loading"/"ready"/"failed"}
 
 
 def _get_dummy_path() -> str:
@@ -35,21 +40,20 @@ def _get_dummy_path() -> str:
 
 
 def warmup_engines(registry, config: dict) -> dict:
-    """预热默认引擎, 返回预热报告。
+    """同步预热必要引擎 + 启动后台异步预热次要引擎。
 
     策略:
-    - 尝试预热 default_engine (ppocrv6)
-    - 若失败 (Docker 未运行等), 自动降级预热 fallback_engine (rapidocr)
-    - 预热失败不阻断启动
+    - [同步] 预热 OCR default_engine (工人最高频, 必须启动即可用)
+    - [同步] 若主引擎失败, 降级预热 fallback_engine
+    - [异步] 后台预加载: scene_classifier, barcode, anomalib (不阻塞启动)
 
     Returns:
-        {"ocr": {"engine": str, "load_sec": float, "infer_sec": float, "ok": bool},
-         "total_sec": float}
+        {"ocr": {...}, "background": [...], "total_sec": float}
     """
-    report = {"ocr": {}, "total_sec": 0}
+    report = {"ocr": {}, "background": [], "total_sec": 0}
     t_start = time.time()
 
-    # 确定默认 OCR 引擎
+    # ─── 同步: 必要 OCR 引擎 ─────────────────────────────────
     ocr_cfg = config.get("ocr", {}) or {}
     default_engine = ocr_cfg.get("default_engine", "rapidocr")
     fallback_engine = ocr_cfg.get("fallback_engine", "rapidocr")
@@ -57,17 +61,72 @@ def warmup_engines(registry, config: dict) -> dict:
     if default_engine == "auto":
         default_engine = "rapidocr"
 
-    # 尝试预热主引擎
     ok = _warmup_one(registry, default_engine, report)
 
-    # 主引擎失败 → 降级预热 fallback (确保启动后有可用 OCR)
     if not ok and fallback_engine != default_engine:
         logger.info("主引擎 %s 预热失败, 降级预热 %s",
                     default_engine, fallback_engine)
         _warmup_one(registry, fallback_engine, report)
 
+    # ─── 异步: 次要引擎后台预加载 ─────────────────────────────
+    secondary_engines = _get_secondary_engines(config, default_engine)
+    if secondary_engines:
+        report["background"] = secondary_engines
+        _start_background_warmup(registry, secondary_engines)
+
     report["total_sec"] = round(time.time() - t_start, 2)
     return report
+
+
+def get_background_status() -> dict[str, str]:
+    """获取后台预热状态 (供状态面板)。"""
+    return dict(_background_status)
+
+
+def _get_secondary_engines(config: dict, primary: str) -> list[str]:
+    """根据配置确定需要后台预加载的次要引擎列表。"""
+    secondary = []
+
+    # 场景分类器 (OCR 自动路由依赖)
+    sc_cfg = (config.get("ocr", {}) or {}).get("scene_classifier", {})
+    if sc_cfg.get("enabled", True):
+        secondary.append("scene_classifier")
+
+    # 条码 (轻量, 加载快)
+    secondary.append("barcode")
+
+    # PatchCore (如果 QC 功能启用)
+    qc_cfg = config.get("qc", {}) or {}
+    if qc_cfg.get("patchcore", {}).get("input_size"):
+        secondary.append("anomalib")
+
+    # 排除已同步加载的主引擎
+    secondary = [e for e in secondary if e != primary]
+    return secondary
+
+
+def _start_background_warmup(registry, engines: list[str]) -> None:
+    """在后台线程中逐个预加载次要引擎。"""
+    def _bg_load():
+        for name in engines:
+            _background_status[name] = "loading"
+            try:
+                t0 = time.time()
+                engine = registry.ensure_loaded(name)
+                elapsed = time.time() - t0
+                if engine.is_ready():
+                    _background_status[name] = "ready"
+                    logger.info("后台预热完成: %s (%.1fs)", name, elapsed)
+                else:
+                    _background_status[name] = "failed"
+                    logger.debug("后台预热跳过: %s (状态: %s)", name, engine.state.value)
+            except Exception as e:
+                _background_status[name] = "failed"
+                logger.debug("后台预热失败: %s (%s)", name, e)
+
+    thread = threading.Thread(target=_bg_load, daemon=True, name="warmup-bg")
+    thread.start()
+    logger.info("后台预热已启动: %s", ", ".join(engines))
 
 
 def _warmup_one(registry, engine_name: str, report: dict) -> bool:
