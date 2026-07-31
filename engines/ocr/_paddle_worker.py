@@ -60,19 +60,21 @@ def main():
             use_textline_orientation=True,
             device=args.device,
             lang=args.lang,
+            enable_mkldnn=False,
         )
         result = ocr.predict(args.image_path)
 
         lines = []
         for page in result:
-            texts = getattr(page, "rec_texts", None)
-            polys = getattr(page, "rec_polys", None)
-            scores = getattr(page, "rec_scores", None)
-
-            if texts is None and isinstance(page, dict):
-                texts = page.get("rec_texts", [])
-                polys = page.get("rec_polys", page.get("dt_polys", []))
-                scores = page.get("rec_scores", [])
+            # OCRResult 可能是 dict-like (paddlex) 或普通对象
+            if hasattr(page, "get"):
+                texts = page.get("rec_texts", None)
+                polys = page.get("rec_polys", page.get("dt_polys", None))
+                scores = page.get("rec_scores", None)
+            else:
+                texts = getattr(page, "rec_texts", None)
+                polys = getattr(page, "rec_polys", None)
+                scores = getattr(page, "rec_scores", None)
 
             if texts is None:
                 if isinstance(page, (list, tuple)):

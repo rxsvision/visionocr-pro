@@ -1,0 +1,494 @@
+{
+  "summary": {
+    "engine": "rapidocr",
+    "total_images": 60,
+    "evaluated": 60,
+    "exact_match_count": 34,
+    "exact_match_rate": 0.5667,
+    "mean_cer": 0.3324,
+    "mean_confidence": 0.6954,
+    "mean_time_ms": 926.5
+  },
+  "results": {
+    "synth_0000_normal.png": {
+      "text": "PP\n20240315",
+      "confidence": 0.9998,
+      "time_ms": 1565.7,
+      "expected": "PP 20240315",
+      "match": false,
+      "cer": 0.1
+    },
+    "synth_0001_normal.png": {
+      "text": "S1234",
+      "confidence": 0.9996,
+      "time_ms": 1120.0,
+      "expected": "S1234",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0002_normal.png": {
+      "text": "B0082",
+      "confidence": 0.9979,
+      "time_ms": 956.0,
+      "expected": "B0082",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0003_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 720.9,
+      "expected": "PTFE",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0004_medium.png": {
+      "text": "Z2206",
+      "confidence": 0.9995,
+      "time_ms": 962.9,
+      "expected": "Z2206",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0005_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 1034.3,
+      "expected": "PP 20240315",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0006_normal.png": {
+      "text": "P20240315",
+      "confidence": 0.9997,
+      "time_ms": 840.0,
+      "expected": "P20240315",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0007_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 1016.5,
+      "expected": "LOT:20260730",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0008_normal.png": {
+      "text": "B0082",
+      "confidence": 0.9838,
+      "time_ms": 850.8,
+      "expected": "B0082",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0009_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 556.6,
+      "expected": "R3X-2019",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0010_medium.png": {
+      "text": "S1234",
+      "confidence": 0.9673,
+      "time_ms": 864.9,
+      "expected": "S1234",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0011_normal.png": {
+      "text": "PA66",
+      "confidence": 0.9996,
+      "time_ms": 771.0,
+      "expected": "PA66",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0012_medium.png": {
+      "text": "Z2206",
+      "confidence": 0.9988,
+      "time_ms": 868.9,
+      "expected": "Z2206",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0013_normal.png": {
+      "text": "RXS-2026-0001",
+      "confidence": 0.9948,
+      "time_ms": 1243.6,
+      "expected": "RXS-2026-0001",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0014_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 999.2,
+      "expected": "POM",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0015_normal.png": {
+      "text": "8008",
+      "confidence": 0.9997,
+      "time_ms": 911.9,
+      "expected": "80O8",
+      "match": false,
+      "cer": 0.25
+    },
+    "synth_0016_normal.png": {
+      "text": "R3X-2019",
+      "confidence": 0.9994,
+      "time_ms": 1018.8,
+      "expected": "R3X-2019",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0017_normal.png": {
+      "text": "B0082",
+      "confidence": 0.9993,
+      "time_ms": 743.4,
+      "expected": "B0082",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0018_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 749.9,
+      "expected": "IP67",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0019_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 778.4,
+      "expected": "QW-1180",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0020_normal.png": {
+      "text": "RXS-2026-0001",
+      "confidence": 0.9969,
+      "time_ms": 1288.9,
+      "expected": "RXS-2026-0001",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0021_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 973.3,
+      "expected": "R3X-2019",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0022_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 465.9,
+      "expected": "CE",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0023_normal.png": {
+      "text": "Class\n11",
+      "confidence": 0.8954,
+      "time_ms": 1367.0,
+      "expected": "Class II",
+      "match": false,
+      "cer": 0.4286
+    },
+    "synth_0024_normal.png": {
+      "text": "S1234",
+      "confidence": 0.9996,
+      "time_ms": 863.1,
+      "expected": "S1234",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0025_normal.png": {
+      "text": "SUS304",
+      "confidence": 0.9986,
+      "time_ms": 862.0,
+      "expected": "SUS304",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0026_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 806.5,
+      "expected": "B0082",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0027_normal.png": {
+      "text": "SUS304",
+      "confidence": 0.9985,
+      "time_ms": 825.3,
+      "expected": "SUS304",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0028_hard.png": {
+      "text": "SUS316L",
+      "confidence": 0.9868,
+      "time_ms": 746.5,
+      "expected": "SUS316L",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0029_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 775.5,
+      "expected": "M8x1.25",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0030_medium.png": {
+      "text": "SUS304 \nSN-001",
+      "confidence": 0.9887,
+      "time_ms": 1315.9,
+      "expected": "SUS304 SN-001",
+      "match": false,
+      "cer": 0.0833
+    },
+    "synth_0031_normal.png": {
+      "text": "20251231",
+      "confidence": 0.9997,
+      "time_ms": 939.7,
+      "expected": "20251231",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0032_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 1008.3,
+      "expected": "SN-2025-009876",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0033_normal.png": {
+      "text": "B0082",
+      "confidence": 0.9981,
+      "time_ms": 922.5,
+      "expected": "B0082",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0034_medium.png": {
+      "text": "6008",
+      "confidence": 0.9977,
+      "time_ms": 673.9,
+      "expected": "6008",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0035_medium.png": {
+      "text": "PP 20240315",
+      "confidence": 0.9995,
+      "time_ms": 890.9,
+      "expected": "PP 20240315",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0036_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 462.4,
+      "expected": "PVC",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0037_medium.png": {
+      "text": "ABS",
+      "confidence": 0.9955,
+      "time_ms": 602.0,
+      "expected": "ABS",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0038_normal.png": {
+      "text": "PVC",
+      "confidence": 0.9984,
+      "time_ms": 761.4,
+      "expected": "PVC",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0039_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 867.2,
+      "expected": "M8x1.25",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0040_medium.png": {
+      "text": "CE",
+      "confidence": 0.9961,
+      "time_ms": 547.7,
+      "expected": "CE",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0041_medium.png": {
+      "text": "D20260101",
+      "confidence": 0.9971,
+      "time_ms": 1082.8,
+      "expected": "D20260101",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0042_normal.png": {
+      "text": "20251231",
+      "confidence": 0.9999,
+      "time_ms": 829.8,
+      "expected": "20251231",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0043_medium.png": {
+      "text": "LOT20240315A",
+      "confidence": 0.9871,
+      "time_ms": 1202.3,
+      "expected": "LOT20240315A",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0044_hard.png": {
+      "text": "8008",
+      "confidence": 0.9995,
+      "time_ms": 1260.0,
+      "expected": "80O8",
+      "match": false,
+      "cer": 0.25
+    },
+    "synth_0045_hard.png": {
+      "text": "2026\n0001",
+      "confidence": 0.9949,
+      "time_ms": 1412.5,
+      "expected": "RXS-2026-0001",
+      "match": false,
+      "cer": 0.3846
+    },
+    "synth_0046_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 1067.3,
+      "expected": "SN-2024-001234",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0047_medium.png": {
+      "text": "HDPE",
+      "confidence": 0.9996,
+      "time_ms": 754.6,
+      "expected": "HDPE",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0048_normal.png": {
+      "text": "LOT:20260730",
+      "confidence": 0.997,
+      "time_ms": 1211.3,
+      "expected": "LOT:20260730",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0049_medium.png": {
+      "text": "HDPE P20110328",
+      "confidence": 0.9913,
+      "time_ms": 1207.8,
+      "expected": "HDPE P20110328",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0050_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 572.6,
+      "expected": "UL",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0051_normal.png": {
+      "text": "20230801",
+      "confidence": 0.9998,
+      "time_ms": 1013.9,
+      "expected": "20230801",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0052_medium.png": {
+      "text": "8008",
+      "confidence": 0.9984,
+      "time_ms": 752.8,
+      "expected": "80O8",
+      "match": false,
+      "cer": 0.25
+    },
+    "synth_0053_medium.png": {
+      "text": "Z2206",
+      "confidence": 0.9961,
+      "time_ms": 874.2,
+      "expected": "Z2206",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0054_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 811.4,
+      "expected": "PTFE",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0055_medium.png": {
+      "text": "D20260101",
+      "confidence": 0.9966,
+      "time_ms": 939.4,
+      "expected": "D20260101",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0056_hard.png": {
+      "text": "",
+      "confidence": 0.0,
+      "time_ms": 822.6,
+      "expected": "AC220V 50Hz",
+      "match": false,
+      "cer": 1.0
+    },
+    "synth_0057_medium.png": {
+      "text": "P20110328",
+      "confidence": 0.9988,
+      "time_ms": 919.4,
+      "expected": "P20110328",
+      "match": true,
+      "cer": 0.0
+    },
+    "synth_0058_medium.png": {
+      "text": "AC220V 5\n50Hz",
+      "confidence": 0.981,
+      "time_ms": 1552.7,
+      "expected": "AC220V 50Hz",
+      "match": false,
+      "cer": 0.2
+    },
+    "synth_0059_medium.png": {
+      "text": "PP",
+      "confidence": 0.9973,
+      "time_ms": 765.1,
+      "expected": "PP",
+      "match": true,
+      "cer": 0.0
+    }
+  }
+}

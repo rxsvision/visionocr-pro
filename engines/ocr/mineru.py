@@ -1,11 +1,11 @@
-"""MinerU - 结构化文档解析 (magic-pdf)
+"""结构化文档解析引擎
 
-优先使用 magic-pdf (MinerU) 做版面分析 + 结构化输出 (Markdown/JSON)。
-若 magic-pdf 不可用, 降级为: RapidOCR 出文本 + 简单正则结构检测
+优先使用外部结构化解析后端做版面分析 + 结构化输出 (Markdown/JSON)。
+若该后端不可用, 降级为: RapidOCR 出文本 + 简单正则结构检测
 (标题/列表/表格), 仍能产出可用的 Markdown 与 JSON。
 
 输出:
-    {"markdown": str, "json": dict, "engine": "mineru"}
+    {"markdown": str, "json": dict, "engine": "structured_doc"}
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ logger = logging.getLogger("visionocr.mineru")
 
 
 class MinerUEngine(BaseEngine):
-    """MinerU 结构化解析 (含降级方案)"""
+    """结构化文档解析 (含降级方案)"""
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -31,10 +31,10 @@ class MinerUEngine(BaseEngine):
     def meta(self) -> EngineMeta:
         return EngineMeta(
             name="mineru",
-            display_name="MinerU 2.5-Pro (结构化)",
+            display_name="结构化文档解析 (Markdown/JSON)",
             category="ocr",
             vram_gb=6.0,
-            license="Apache-2.0+",
+            license="Apache-2.0 (降级路径)",
             description="结构化文档解析, 输出 Markdown/JSON, 支持复杂排版",
             tags=["结构化", "Markdown", "复杂排版"],
         )
