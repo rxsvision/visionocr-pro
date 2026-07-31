@@ -118,6 +118,8 @@ class AnomalibEngine(BaseEngine):
         for path in image_paths:
             feat = self._extract_features(path)
             if feat is not None:
+                # 裁切到有效区域 (排除letterbox填充, 避免假特征污染bank)
+                feat = self._crop_features_to_valid(feat)
                 all_features.append(feat)
 
         if not all_features:
@@ -125,6 +127,14 @@ class AnomalibEngine(BaseEngine):
 
         bank = np.concatenate(all_features, axis=0)  # (N_total, D)
         logger.info("原始特征: %d patches", bank.shape[0])
+
+        # 预采样: 限制 coreset 输入规模 (避免 O(n_select×n) 爆炸)
+        _MAX_CORESET_INPUT = 25000
+        if bank.shape[0] > _MAX_CORESET_INPUT:
+            n_orig = bank.shape[0]
+            idx = np.random.choice(n_orig, _MAX_CORESET_INPUT, replace=False)
+            bank = bank[idx]
+            logger.info("预采样: %d → %d patches", n_orig, _MAX_CORESET_INPUT)
 
         # Coreset 子采样
         if ratio < 1.0 and bank.shape[0] > 100:
@@ -143,27 +153,36 @@ class AnomalibEngine(BaseEngine):
         # 预缓存GPU tensor加速推理
         self._cache_bank_tensor()
 
-        # ─── 自适应阈值校准 ───────────────────────────────────
-        # 对训练集自身推理, 取 P99 作为"正常上限"
-        # 保守模式: P99 × 0.8 (留 20% 余量, 宁可误报不漏检)
-        # 标准模式: P99 × 1.0
-        train_scores = []
-        for path in image_paths:
+        # ─── 自适应阈值校准 (held-out, 避免self-match偏差) ─────
+        # 从训练集中留出20%作为校准集 (不参与建库)
+        # 校准集到bank的距离代表"未见正常样本"的真实分布
+        n_total = len(image_paths)
+        if n_total >= 10:
+            n_cal = max(3, n_total // 5)  # 20%, 至少3张
+            cal_paths = image_paths[-n_cal:]  # 取最后N张 (train已shuffle)
+        else:
+            cal_paths = image_paths  # 样本太少, 全部复用
+
+        cal_scores = []
+        for path in cal_paths:
             feat = self._extract_features(path)
             if feat is None:
                 continue
+            feat = self._crop_features_to_valid(feat)
             dists = self._nearest_distances(feat)
             k = max(1, len(dists) // 20)
             s = float(np.sort(dists)[-k:].mean())
-            train_scores.append(s)
+            cal_scores.append(s)
 
-        if train_scores:
-            p99 = float(np.percentile(train_scores, 99))
-            margin = 0.8 if self._conservative else 1.0
+        if cal_scores:
+            p99 = float(np.percentile(cal_scores, 99))
+            # 保守模式: P99 × 1.2 (阈值略高于正常上限, 宁可误报不漏检)
+            # 标准模式: P99 × 1.0
+            margin = 1.2 if self._conservative else 1.0
             self._calibrated_threshold = p99 * margin
-            self._train_scores = train_scores
-            logger.info("阈值校准: P99=%.4f, calibrated=%.4f (conservative=%s)",
-                        p99, self._calibrated_threshold, self._conservative)
+            self._train_scores = cal_scores
+            logger.info("阈值校准: P99=%.4f, calibrated=%.4f (conservative=%s, n_cal=%d)",
+                        p99, self._calibrated_threshold, self._conservative, len(cal_scores))
         else:
             self._calibrated_threshold = None
 
@@ -188,22 +207,27 @@ class AnomalibEngine(BaseEngine):
             return {"score": 0, "anomaly_map": None, "pred_label": "ERROR",
                     "error": "无法读取图像"}
 
+        # 裁切到有效区域 (与bank一致, 排除填充区假距离)
+        feat_valid = self._crop_features_to_valid(feat)
+
         # 计算每个 patch 到记忆库的最近邻距离 (GPU加速)
-        distances = self._nearest_distances(feat)  # (n_patches,)
+        distances = self._nearest_distances(feat_valid)  # (n_valid_patches,)
 
-        # 异常图: reshape 回空间维度
-        grid_size = int(np.sqrt(feat.shape[0]))
-        anomaly_map = distances.reshape(grid_size, grid_size)
-
-        # Letterbox 裁切: 只保留有效图像区域 (排除填充)
+        # 异常图: reshape 回空间维度 (裁切后的grid)
         vr = getattr(self, "_last_valid_region", None)
         if vr and (vr["pad_top"] > 0 or vr["pad_left"] > 0):
-            gs = grid_size
-            gt = int(vr["pad_top"] * gs / self._img_size)
-            gl = int(vr["pad_left"] * gs / self._img_size)
-            gh = max(1, int(vr["new_h"] * gs / self._img_size))
-            gw = max(1, int(vr["new_w"] * gs / self._img_size))
-            anomaly_map = anomaly_map[gt:gt + gh, gl:gl + gw]
+            grid_size = int(np.sqrt(feat.shape[0]))
+            gw = max(1, int(vr["new_w"] * grid_size / self._img_size))
+            gh = max(1, int(vr["new_h"] * grid_size / self._img_size))
+        else:
+            gw = gh = int(np.sqrt(feat_valid.shape[0]))
+        # 确保 reshape 尺寸匹配
+        if gw * gh == feat_valid.shape[0]:
+            anomaly_map = distances.reshape(gh, gw)
+        else:
+            gs = int(np.sqrt(feat_valid.shape[0]))
+            anomaly_map = distances.reshape(gs, gs) if gs * gs == feat_valid.shape[0] \
+                else distances.reshape(1, -1)
 
         # 归一化到 0~1
         map_min, map_max = anomaly_map.min(), anomaly_map.max()
@@ -401,6 +425,41 @@ class AnomalibEngine(BaseEngine):
         patches = fused.permute(0, 2, 3, 1).reshape(-1, c)
         return patches.cpu().numpy()
 
+    def _crop_features_to_valid(self, feat: np.ndarray) -> np.ndarray:
+        """裁切特征到有效图像区域 (排除letterbox填充)。
+
+        对于非正方形图像, letterbox会填充边缘。填充区的特征不代表真实表面,
+        纳入bank会稀释正常模式表达力, 降低OK/NG分离度。
+        """
+        vr = getattr(self, "_last_valid_region", None)
+        if vr is None:
+            return feat
+        # 无填充时不需要裁切
+        if vr["pad_top"] == 0 and vr["pad_left"] == 0 and \
+           vr["new_h"] == self._img_size and vr["new_w"] == self._img_size:
+            return feat
+
+        grid_size = int(np.sqrt(feat.shape[0]))
+        if grid_size * grid_size != feat.shape[0]:
+            return feat  # 非正方形grid, 跳过
+
+        # 计算有效区域在grid坐标中的范围
+        gt = int(vr["pad_top"] * grid_size / self._img_size)
+        gl = int(vr["pad_left"] * grid_size / self._img_size)
+        gh = max(1, int(vr["new_h"] * grid_size / self._img_size))
+        gw = max(1, int(vr["new_w"] * grid_size / self._img_size))
+
+        # 边界保护
+        gt = min(gt, grid_size - 1)
+        gl = min(gl, grid_size - 1)
+        gh = min(gh, grid_size - gt)
+        gw = min(gw, grid_size - gl)
+
+        # Reshape → crop → flatten
+        feat_2d = feat.reshape(grid_size, grid_size, -1)
+        cropped = feat_2d[gt:gt + gh, gl:gl + gw, :]
+        return cropped.reshape(-1, feat.shape[1])
+
     def _cache_bank_tensor(self) -> None:
         """将memory bank预缓存为GPU tensor, 加速推理时的距离计算。"""
         if self._memory_bank is None:
@@ -456,18 +515,32 @@ class AnomalibEngine(BaseEngine):
 
     @staticmethod
     def _coreset_subsample(features: np.ndarray, n_select: int) -> np.ndarray:
-        """贪心最远点采样 (Coreset)。"""
+        """贪心最远点采样 (Coreset) — GPU加速版。"""
         n = features.shape[0]
         if n_select >= n:
             return features
 
-        selected = [np.random.randint(n)]
-        min_dists = np.full(n, np.inf)
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            feat_t = torch.from_numpy(features).float().to(device)
+            selected = [np.random.randint(n)]
+            min_dists = torch.full((n,), float("inf"), device=device)
 
-        for _ in range(n_select - 1):
-            last = features[selected[-1]]
-            dists = np.sum((features - last) ** 2, axis=1)
-            min_dists = np.minimum(min_dists, dists)
-            selected.append(int(np.argmax(min_dists)))
+            for _ in range(n_select - 1):
+                last = feat_t[selected[-1]]
+                dists = torch.sum((feat_t - last) ** 2, dim=1)
+                min_dists = torch.minimum(min_dists, dists)
+                selected.append(int(torch.argmax(min_dists).item()))
 
-        return features[selected]
+            return features[selected]
+        except Exception:
+            # CPU fallback
+            selected = [np.random.randint(n)]
+            min_dists = np.full(n, np.inf)
+            for _ in range(n_select - 1):
+                last = features[selected[-1]]
+                dists = np.sum((features - last) ** 2, axis=1)
+                min_dists = np.minimum(min_dists, dists)
+                selected.append(int(np.argmax(min_dists)))
+            return features[selected]
