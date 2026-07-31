@@ -219,7 +219,9 @@ def run_detection(registry, image_path: str, prompt: str = "",
     if not prompt.strip():
         prompt = DEFAULT_PROMPT
     en_prompt = translate_prompt(prompt)
-    result = engine.infer(image_path, prompt=en_prompt, threshold=threshold)
+    from core.infer_stats import Timer
+    with Timer("grounding_dino"):
+        result = engine.infer(image_path, prompt=en_prompt, threshold=threshold)
 
     if result.get("error"):
         return {"image": img, "verdict": "ERROR", "detections": [],

@@ -430,17 +430,21 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
             except Exception:
                 infer_path = geo_path
 
-        # 推理
+        # 推理 (Timer 记录各引擎真实耗时 → 状态卡片)
+        from core.infer_stats import Timer
         try:
-            result = engine.infer(infer_path)
+            with Timer(getattr(engine.meta, "name", engine_key)):
+                result = engine.infer(infer_path)
             if "error" in result and engine_key != "rapidocr":
                 fallback = registry.ensure_loaded("rapidocr")
-                result = fallback.infer(infer_path)
+                with Timer("rapidocr"):
+                    result = fallback.infer(infer_path)
         except Exception as e:
             if engine_key != "rapidocr":
                 try:
                     engine_fb = registry.ensure_loaded("rapidocr")
-                    result = engine_fb.infer(infer_path)
+                    with Timer("rapidocr"):
+                        result = engine_fb.infer(infer_path)
                 except Exception:
                     result = {"text": "", "error": str(e), "confidence": 0}
             else:

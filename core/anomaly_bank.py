@@ -121,7 +121,9 @@ def run_anomaly_detection(registry, image_path: str,
             return {"pred_label": "ERROR",
                     "error": f"产品「{product_name}」无特征库, 请先注册 OK 样本"}
 
-    result = engine.infer(image_path, threshold=threshold)
+    from core.infer_stats import Timer
+    with Timer("anomalib"):
+        result = engine.infer(image_path, threshold=threshold)
     if result.get("error"):
         return result
 

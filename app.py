@@ -2,6 +2,7 @@
 启动: python app.py → http://localhost:7860
 """
 import atexit
+import json
 import logging
 import sys
 import traceback
@@ -16,12 +17,28 @@ sys.path.insert(0, str(ROOT))
 
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "visionocr.log"
+LOG_JSONL_FILE = LOG_DIR / "visionocr.jsonl"
 LOG_FORMAT = "%(asctime)s │ %(levelname)-7s │ %(name)s │ %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
+class JsonFormatter(logging.Formatter):
+    """结构化日志: 每条记录序列化为单行 JSON (供日志分析/产线追溯)。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "ts": self.formatTime(record, LOG_DATEFMT),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
 def setup_logging(verbose: bool = False) -> None:
-    """配置全局日志: 控制台(INFO) + 文件轮转(DEBUG, 10MB×5)。"""
+    """配置全局日志: 控制台(INFO) + 文本轮转(DEBUG) + JSONL结构化(DEBUG)。"""
     LOG_DIR.mkdir(exist_ok=True)
 
     root = logging.getLogger()
@@ -33,13 +50,21 @@ def setup_logging(verbose: bool = False) -> None:
     console.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
     root.addHandler(console)
 
-    # 文件: 排障用, 保留最近 50MB 日志
+    # 文本文件: 人类排障用, 保留最近 50MB 日志
     file_handler = RotatingFileHandler(
         LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATEFMT))
     root.addHandler(file_handler)
+
+    # JSONL 文件: 结构化, 供日志分析工具/产线追溯消费
+    json_handler = RotatingFileHandler(
+        LOG_JSONL_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
+    json_handler.setLevel(logging.DEBUG)
+    json_handler.setFormatter(JsonFormatter())
+    root.addHandler(json_handler)
 
     # 降低第三方库噪音
     logging.getLogger("gradio").setLevel(logging.WARNING)
