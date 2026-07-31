@@ -16,7 +16,7 @@ import gradio as gr
 from core.config import load_config
 from core.database import get_conn
 from core.defect_detector import (
-    DEFAULT_PROMPT, run_detection, save_qc_result,
+    DEFAULT_PROMPT, run_detection, run_union_detection, save_qc_result,
     list_recipes, load_recipe, save_recipe, delete_recipe,
 )
 from core.anomaly_bank import (
@@ -71,9 +71,12 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                 gr.Markdown("---")
                 gr.Markdown("### 检测模式")
                 detect_mode = gr.Radio(
-                    choices=["零样本 (Grounding DINO)", "少样本 (PatchCore)"],
+                    choices=["零样本 (Grounding DINO)", "少样本 (PatchCore)",
+                             "Union 零漏检 (三源OR)"],
                     value="零样本 (Grounding DINO)",
                     label="检测模式",
+                    info="零样本: 提示词驱动 | 少样本: OK样本建库 | "
+                         "Union: PatchCore+DINO+YOLO 任一NG即NG (漏检零容忍)",
                 )
                 gr.Markdown("### 检测配置")
                 recipe_choice = gr.Dropdown(
@@ -267,6 +270,81 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         status = f"PatchCore 检测 · 产品: {product or '默认'} · 阈值: {threshold}"
         yield (overlay, verdict_str, f"{score:.4f}", "1" if verdict == "NG" else "0",
                table, status, log(f"✓ {verdict_str}"))
+        return
+
+    # ─── Union 零漏检模式 (三源 OR: PatchCore + DINO + YOLO) ──
+    if "Union" in (mode or ""):
+        yield _EMPTY[:6] + (log("▶ Union 零漏检 (PatchCore+DINO+YOLO 任一NG即NG)..."),)
+        cfg = _get_config()
+        product = "" if pc_product in ("(新建)", None) else (pc_product or "")
+        result = run_union_detection(
+            registry, image_path, prompt=prompt, threshold=threshold,
+            config=cfg, product_name=product)
+
+        if result.get("error"):
+            yield (result.get("image"), "ERROR", "—", "—", [],
+                   f"⚠ {result['error']}", log(f"✗ {result['error']}"))
+            return
+
+        verdict = result["verdict"]
+        sources = result.get("ng_sources", [])
+        pc = result.get("patchcore")
+        dino = result.get("dino")
+        yolo = result.get("yolo")
+
+        # 统一明细表 (对齐表头 #/缺陷类型/置信度/位置) + detections (落库用)
+        table = []
+        detections = []
+        max_score = 0.0
+        row_no = 0
+        if pc:
+            row_no += 1
+            table.append([str(row_no), "[PatchCore] 表面异常",
+                          f"{pc.get('score', 0):.4f}", "热力图"])
+            max_score = max(max_score, float(pc.get("score", 0)))
+            detections.append({"source": "patchcore", "label": "表面异常",
+                               "score": pc.get("score", 0)})
+        if dino:
+            for det in dino.get("detections", []):
+                box = det["box"]
+                row_no += 1
+                table.append([str(row_no), f"[DINO] {det['label']}",
+                              f"{det['score']:.2%}",
+                              f"({box[0]:.0f},{box[1]:.0f},{box[2]:.0f},{box[3]:.0f})"])
+                detections.append({"source": "dino", **det})
+            max_score = max(max_score, float(dino.get("max_score", 0)))
+        if yolo:
+            for b, l, s in zip(yolo.get("boxes", []),
+                               yolo.get("labels", []),
+                               yolo.get("scores", [])):
+                row_no += 1
+                table.append([str(row_no), f"[YOLO] {l}", f"{s:.2%}",
+                              f"({b[0]:.0f},{b[1]:.0f},{b[2]:.0f},{b[3]:.0f})"])
+                detections.append({"source": "yolo", "box": b,
+                                   "label": l, "score": s})
+            max_score = max(max_score, float(yolo.get("max_score", 0)))
+
+        if verdict == "OK":
+            verdict_str = "✓ OK (合格)"
+        else:
+            verdict_str = f"✗ NG (触发源: {'+'.join(sources)})"
+
+        # 落库
+        try:
+            conn = get_conn(cfg.get("data_dir", "data"))
+            save_qc_result(conn, image_path, verdict, detections,
+                           max_score, f"[Union] {prompt}")
+            conn.close()
+        except Exception:
+            pass
+
+        active = [s for s, r in (("PatchCore", pc), ("DINO", dino), ("YOLO", yolo))
+                  if r]
+        status = (f"Union 零漏检 · 产品: {product or '默认'} · "
+                  f"激活源: {'+'.join(active) or '无'}")
+        yield (result.get("image"), verdict_str, f"{max_score:.2%}",
+               str(len(detections)), table, status,
+               log(f"✓ {verdict_str} · 最高分 {max_score:.2%}"))
         return
 
     # ─── Grounding DINO 零样本模式 (默认) ─────────────────
