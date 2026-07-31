@@ -6,6 +6,7 @@
 2. [硬件要求](#2-硬件要求)
 3. [软件依赖矩阵](#3-软件依赖矩阵)
 4. [模型分布架构](#4-模型分布架构)
+   - 4.1 [YOLO 缺陷检测权重（本机训练）](#41-yolo-缺陷检测权重本机训练)
 5. [手动安装](#5-手动安装)
 6. [Docker 可选：Windows 运行 PaddleOCR](#6-docker-可选windows-运行-paddleocr)
 7. [离线部署](#7-离线部署)
@@ -132,6 +133,9 @@ chmod +x setup.sh && ./setup.sh
 │  代码内置                                                          │
 │  └── PatchCore WideResNet50   ~100MB  (首次运行 torchvision 下载) │
 │                                                                   │
+│  本机训练产物 (finetune/output_yolo/)                             │
+│  └── YOLOv8 缺陷检测权重       ~24MB   (train_yolo.py 训练生成)   │
+│                                                                   │
 ├─────────────────────────────────────────────────────────────────┤
 │  总计: ~9GB    设计原则: 各工具管各自模型, 仓库只存代码+非托管权重  │
 └─────────────────────────────────────────────────────────────────┘
@@ -143,6 +147,28 @@ chmod +x setup.sh && ./setup.sh
 - transformers 默认查 HF cache，移走需每次设环境变量
 - 模型更新（如 qwen3-vl 升级）由各工具自动管理版本去重
 - 仓库保持 <5MB 代码 + 1.7GB 非托管权重，克隆/备份成本低
+
+### 4.1 YOLO 缺陷检测权重（本机训练）
+
+YOLO 结构缺陷检测权重（`best.pt`，~24MB）**既不随仓库分发，也不从网络下载**——它是针对特定产品标注数据训练的产物，必须在本机生成：
+
+```bash
+# 1. 数据准备：VOC XML 标注 → YOLO 格式（自动分层划分 train/val）
+python finetune/prepare_pcb_data.py --src "<PCB_DATASET路径>"
+
+# 2. 训练：COCO 预训练权重微调（RTX 4070 Ti 约 15 分钟，早停）
+python finetune/train_yolo.py --epochs 120 --batch 8 --imgsz 1280
+```
+
+权重输出到 `finetune/output_yolo/pcb_defect/weights/best.pt`，引擎按以下优先级自动发现：
+
+1. `config.yaml` 的 `yolo_defect.weights`（显式指定，缺失则报错）
+2. `finetune/output_yolo/pcb_defect/weights/best.pt`
+3. `models/yolo_defect.pt`
+
+**无权重时的行为**：`yolo_defect` 引擎进入 error 状态并静默跳过，Union 检测仍由 PatchCore + Grounding DINO 兜底，不影响其他功能。
+
+**跨域使用警告**：YOLO 检测的是**训练集中标注的缺陷类别**（当前为 PCB 六类：缺孔/鼠咬/开路/短路/毛刺/杂铜）。将 PCB 权重直接用于金属件、玻璃瓶等其他产品会产生**大量误报**（实测金属划伤/油污被误判为「鼠咬」，单图 5+ 假框）。切换产品必须用该产品标注数据重新训练，或在 `config.yaml` 设 `qc.union.enable_yolo: false` 关闭该检测源。
 
 ---
 
