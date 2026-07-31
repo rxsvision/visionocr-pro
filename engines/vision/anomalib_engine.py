@@ -220,14 +220,18 @@ class AnomalibEngine(BaseEngine):
             gw = max(1, int(vr["new_w"] * grid_size / self._img_size))
             gh = max(1, int(vr["new_h"] * grid_size / self._img_size))
         else:
-            gw = gh = int(np.sqrt(feat_valid.shape[0]))
+            grid_size = gw = gh = int(np.sqrt(feat_valid.shape[0]))
         # 确保 reshape 尺寸匹配
         if gw * gh == feat_valid.shape[0]:
             anomaly_map = distances.reshape(gh, gw)
         else:
             gs = int(np.sqrt(feat_valid.shape[0]))
-            anomaly_map = distances.reshape(gs, gs) if gs * gs == feat_valid.shape[0] \
-                else distances.reshape(1, -1)
+            if gs * gs == feat_valid.shape[0]:
+                anomaly_map = distances.reshape(gs, gs)
+                grid_size = gs
+            else:
+                anomaly_map = distances.reshape(1, -1)
+                grid_size = feat_valid.shape[0]
 
         # 归一化到 0~1
         map_min, map_max = anomaly_map.min(), anomaly_map.max()
