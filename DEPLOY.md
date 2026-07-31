@@ -133,8 +133,8 @@ chmod +x setup.sh && ./setup.sh
 │  代码内置                                                          │
 │  └── PatchCore WideResNet50   ~100MB  (首次运行 torchvision 下载) │
 │                                                                   │
-│  本机训练产物 (finetune/output_yolo/)                             │
-│  └── YOLOv8 缺陷检测权重       ~24MB   (train_yolo.py 训练生成)   │
+│  本机训练产物 (models/yolo/)                                      │
+│  └── YOLOv8 缺陷检测权重       ~24MB/产品 (train_yolo.py 训练+命名)│
 │                                                                   │
 ├─────────────────────────────────────────────────────────────────┤
 │  总计: ~9GB    设计原则: 各工具管各自模型, 仓库只存代码+非托管权重  │
@@ -160,15 +160,26 @@ python finetune/prepare_pcb_data.py --src "<PCB_DATASET路径>"
 python finetune/train_yolo.py --epochs 120 --batch 8 --imgsz 1280
 ```
 
-权重输出到 `finetune/output_yolo/pcb_defect/weights/best.pt`，引擎按以下优先级自动发现：
+权重输出到 `finetune/output_yolo/pcb_defect/weights/best.pt`。
+
+**产品门控（Union 检测）**：Union 检测中的 YOLO 源**按产品激活**——引擎在 `models/yolo/{产品名}.pt` 查找当前产品的专属权重，找到才参与检测，否则自动跳过（由 PatchCore + DINO 兜底）。这是跨域误报防护：YOLO 只检测训练集标注的缺陷类别，跨产品会大量误报（实测 PCB 权重把金属划伤误判为「鼠咬」，单图 5+ 假框）。
+
+因此训练完成后，需将权重按产品命名放入门控目录：
+
+```bash
+mkdir models\yolo
+copy finetune\output_yolo\pcb_defect\weights\best.pt models\yolo\PCB.pt
+```
+
+之后在质检界面选择产品「PCB」时 YOLO 源才会激活；选择其他产品（或未训练的产品）时 YOLO 源自动禁用。
+
+**引擎独立加载（非 Union 路径）**：若不经过 Union 而直接加载引擎，权重按以下优先级发现：
 
 1. `config.yaml` 的 `yolo_defect.weights`（显式指定，缺失则报错）
 2. `finetune/output_yolo/pcb_defect/weights/best.pt`
 3. `models/yolo_defect.pt`
 
-**无权重时的行为**：`yolo_defect` 引擎进入 error 状态并静默跳过，Union 检测仍由 PatchCore + Grounding DINO 兜底，不影响其他功能。
-
-**跨域使用警告**：YOLO 检测的是**训练集中标注的缺陷类别**（当前为 PCB 六类：缺孔/鼠咬/开路/短路/毛刺/杂铜）。将 PCB 权重直接用于金属件、玻璃瓶等其他产品会产生**大量误报**（实测金属划伤/油污被误判为「鼠咬」，单图 5+ 假框）。切换产品必须用该产品标注数据重新训练，或在 `config.yaml` 设 `qc.union.enable_yolo: false` 关闭该检测源。
+**无权重时的行为**：`yolo_defect` 引擎进入 error 状态并静默跳过，Union 检测仍由 PatchCore + Grounding DINO 兜底，不影响其他功能。切换产品必须用该产品标注数据重新训练并放入 `models/yolo/{产品名}.pt`，或设 `qc.union.enable_yolo: false` 全局关闭该检测源。
 
 ---
 

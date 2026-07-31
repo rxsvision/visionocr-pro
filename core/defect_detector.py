@@ -354,12 +354,15 @@ def run_union_detection(registry, image_path: str,
                         prompt: str = "",
                         threshold: float | None = None,
                         size_cfg: dict | None = None,
-                        config: dict | None = None) -> dict:
-    """双模型 Union OR 检测: PatchCore + Grounding DINO。
+                        config: dict | None = None,
+                        product_name: str = "") -> dict:
+    """三源 Union OR 检测: PatchCore + Grounding DINO + YOLO。
 
     零漏检架构:
     - PatchCore (表面异常): 划痕/凹陷/色差/污渍等, 基于正常样本记忆库
     - Grounding DINO (结构缺陷): 缺件/错位/标签歪等, 基于文本提示词
+    - YOLO (结构缺陷): 缺孔/短路/毛刺等, 少样本微调; 受产品门控,
+      仅当前产品有专属权重 (models/yolo/{product}.pt) 时激活, 防跨域误报
     - Union OR: 任一模型判定 NG → 最终 NG (宁可误报, 不可漏检)
     - 误报由人工复核兜底 (产线标准流程)
 
@@ -370,11 +373,12 @@ def run_union_detection(registry, image_path: str,
         threshold: 异常分数阈值 (None=使用配置)
         size_cfg: 瑕疵尺寸过滤配置
         config: 全局配置字典 (读取 qc.union 段)
+        product_name: 当前产品名 (YOLO 门控用; 空/占位符=跳过 YOLO)
 
     Returns:
         {"image": np.ndarray, "verdict": "OK"/"NG",
-         "patchcore": {...} | None, "dino": {...} | None,
-         "ng_sources": ["patchcore"] | ["dino"] | ["patchcore","dino"]}
+         "patchcore": {...} | None, "dino": {...} | None, "yolo": {...} | None,
+         "ng_sources": [...]}  ng_sources 可含 "patchcore"/"dino"/"yolo"
     """
     import cv2
 
@@ -427,26 +431,23 @@ def run_union_detection(registry, image_path: str,
         elif dino_result.get("verdict") == "NG":
             ng_sources.append("dino")
 
-    # ── 2b) YOLO 结构缺陷检测 (少样本微调, 微观缺陷补位) ──
+    # ── 2b) YOLO 结构缺陷检测 (产品门控: 仅当前产品有专属权重时激活) ──
+    # 跨域误报防护: YOLO 检测训练集标注的缺陷类别, 跨产品会大量误报,
+    # 故无产品上下文或该产品未训练 YOLO 时, 跳过本检测源。
     if enable_yolo:
         yolo_eng = registry.get("yolo_defect")
-        if yolo_eng is not None:
-            if not yolo_eng.is_ready():
-                try:
-                    registry.ensure_loaded("yolo_defect")
-                except Exception as e:
-                    logger.debug("Union/YOLO 加载失败 (可能未训练): %s", e)
-            if yolo_eng.is_ready():
-                from core.infer_stats import Timer
-                with Timer("yolo_defect"):
-                    yolo_result = yolo_eng.infer(image_path)
-                if yolo_result.get("error"):
-                    logger.warning("Union/YOLO 错误: %s", yolo_result["error"])
-                    yolo_result = None
-                elif yolo_result.get("count", 0) > 0:
-                    ng_sources.append("yolo")
-            else:
-                logger.debug("Union: YOLO 跳过 (未就绪/未训练)")
+        if yolo_eng is not None and yolo_eng.load_for_product(product_name):
+            from core.infer_stats import Timer
+            with Timer("yolo_defect"):
+                yolo_result = yolo_eng.infer(image_path)
+            if yolo_result.get("error"):
+                logger.warning("Union/YOLO 错误: %s", yolo_result["error"])
+                yolo_result = None
+            elif yolo_result.get("count", 0) > 0:
+                ng_sources.append("yolo")
+        else:
+            logger.debug("Union: YOLO 跳过 (产品「%s」无专属权重)",
+                         product_name or "<无>")
 
     # ── 3) Union OR 判定 ──
     verdict = "NG" if ng_sources else "OK"

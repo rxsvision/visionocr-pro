@@ -49,6 +49,7 @@ class YOLODefectEngine(BaseEngine):
         self._conf = float(ycfg.get("confidence_threshold", 0.25))
         self._imgsz = int(ycfg.get("imgsz", 1280))
         self._names: dict[int, str] = {}
+        self._loaded_product: str | None = None
 
     @property
     def meta(self) -> EngineMeta:
@@ -76,7 +77,9 @@ class YOLODefectEngine(BaseEngine):
         return None
 
     def load(self) -> None:
-        weights = self._resolve_weights()
+        self._load_weights(self._resolve_weights())
+
+    def _load_weights(self, weights: Path | None) -> None:
         if weights is None:
             logger.error("未找到 YOLO 权重, 请先训练: python finetune/train_yolo.py")
             self.state = EngineState.ERROR
@@ -95,6 +98,28 @@ class YOLODefectEngine(BaseEngine):
         except Exception as e:
             logger.error("YOLO 加载失败: %s", e)
             self.state = EngineState.ERROR
+
+    def load_for_product(self, product_name: str | None) -> bool:
+        """按产品加载专属权重 (跨域误报防护门控)。
+
+        Returns:
+            True  — 该产品有专属权重且已就绪, 可参与检测
+            False — 无产品上下文或该产品未训练 YOLO, Union 应跳过本检测源
+
+        不改变「无权重」时的状态语义: 解析不到权重直接返回 False,
+        不触发 ERROR (区别于 load() 的显式配置缺失)。
+        """
+        from core.yolo_products import resolve_yolo_weights
+        weights = resolve_yolo_weights(product_name)
+        if weights is None:
+            return False
+        # 已加载同一产品权重 → 复用
+        if self.is_ready() and self._loaded_product == product_name:
+            return True
+        self._load_weights(weights)
+        if self.is_ready():
+            self._loaded_product = product_name
+        return self.is_ready()
 
     def infer(self, image_path: str, **kwargs) -> Any:
         if not self.is_ready():
