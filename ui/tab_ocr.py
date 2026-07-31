@@ -479,6 +479,25 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
 
     elapsed = time.time() - t0
 
+    # ─── 条码自动检测 (与OCR并行, 工业追溯刚需) ─────────────
+    barcode_info = ""
+    barcode_codes = []
+    try:
+        barcode_engine = registry.ensure_loaded("barcode")
+        if barcode_engine and barcode_engine.is_ready():
+            bc_result = barcode_engine.infer(image_path)
+            barcode_codes = bc_result.get("codes", [])
+            if barcode_codes:
+                bc_lines = []
+                for bc in barcode_codes:
+                    bc_lines.append(f"[{bc['type']}] {bc['content']}")
+                barcode_info = "\n".join(bc_lines)
+                yield (None, "", "—", "—", "—", {},
+                       log(f"✓ 条码: {len(barcode_codes)} 个 ({', '.join(bc['type'] for bc in barcode_codes)})"))
+    except Exception as e:
+        yield (None, "", "—", "—", "—", {},
+               log(f"· 条码检测跳过 ({e})"))
+
     # ─── 合并文本 + 后处理纠错 ──────────────────────────────
     if len(all_texts) == 1:
         combined_text = all_texts[0][1]
@@ -543,6 +562,10 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
         verdict_header += "\n" + " | ".join(ng_regions)
     combined_text = verdict_header + "\n\n" + combined_text
 
+    # 条码结果附加 (工业追溯: 批次号/工件ID/产线路由)
+    if barcode_info:
+        combined_text += f"\n\n─── 条码 ───\n{barcode_info}"
+
     # ─── 格式化输出 ─────────────────────────────────────────
     scene_display = scene_result.get("scene", "手动选择")
     conf_sc = scene_result.get("confidence", None)
@@ -565,6 +588,7 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
         "corrections": corrections,
         "roi_applied": roi_applied,
         "roi_warnings": roi_warnings,
+        "barcodes": barcode_codes,
     }
 
     final_log = log(f"✓ 完成 · 耗时 {elapsed:.2f}s · "
