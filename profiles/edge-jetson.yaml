@@ -1,0 +1,30 @@
+# VisionOCR Pro — 边缘部署 (NVIDIA Jetson Orin 8GB / Orin Nano)
+# 启动: python app.py --profile edge-jetson
+# 特点: ARM64, 8GB 统一内存, 本地模型, 低功耗
+
+device: "cuda"
+
+vram:
+  max_budget_gb: 6
+  idle_unload_sec: 120
+  quantization: "q4"
+
+ocr:
+  default_engine: "rapidocr"
+  fallback_engine: "rapidocr"
+  ppocrv6:
+    gpu: true
+    timeout: 180
+
+qc:
+  patchcore:
+    input_size: 384
+    conservative_mode: true
+  union:
+    enable_patchcore: true
+    enable_dino: false
+
+model_source: "local"
+hf_mirror: ""
+
+server_port: 7860

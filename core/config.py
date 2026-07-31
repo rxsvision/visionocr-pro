@@ -25,7 +25,18 @@ def _resolve_env_vars(value):
     return value
 
 
-def load_config(path: Path | str | None = None) -> dict:
+def _deep_merge(base: dict, override: dict) -> dict:
+    """深度合并: override 覆盖 base (字典递归合并, 非字典直接覆盖)。"""
+    result = dict(base)
+    for key, val in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(val, dict):
+            result[key] = _deep_merge(result[key], val)
+        else:
+            result[key] = val
+    return result
+
+
+def load_config(path: Path | str | None = None, profile: str | None = None) -> dict:
     # 尝试加载 .env 文件 (可选依赖)
     try:
         from dotenv import load_dotenv
@@ -37,12 +48,26 @@ def load_config(path: Path | str | None = None) -> dict:
 
     path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not path.exists():
-        return _defaults()
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+        cfg = _defaults()
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
 
     # 环境变量替换
     cfg = _resolve_env_vars(cfg)
+
+    # Profile 覆盖 (部署环境分层: gpu-full / cpu-only / edge-jetson)
+    if profile:
+        profile_path = DEFAULT_CONFIG_PATH.parent / "profiles" / f"{profile}.yaml"
+        if profile_path.exists():
+            with open(profile_path, "r", encoding="utf-8") as f:
+                profile_cfg = yaml.safe_load(f) or {}
+            profile_cfg = _resolve_env_vars(profile_cfg)
+            cfg = _deep_merge(cfg, profile_cfg)
+        else:
+            import logging
+            logging.getLogger("visionocr.config").warning(
+                "Profile '%s' 不存在: %s (使用默认配置)", profile, profile_path)
 
     # 路径解析为绝对路径
     root = path.parent

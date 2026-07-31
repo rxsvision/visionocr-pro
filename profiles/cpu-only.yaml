@@ -1,0 +1,28 @@
+# VisionOCR Pro — 纯 CPU 部署 (无 GPU / 无 Docker 的工控机)
+# 启动: python app.py --profile cpu-only
+# 特点: 全部走 CPU 引擎, 无需 Docker, 无需 CUDA
+
+device: "cpu"
+
+vram:
+  max_budget_gb: 0
+  idle_unload_sec: 600
+  quantization: "q4"
+
+ocr:
+  default_engine: "rapidocr"
+  fallback_engine: "rapidocr"
+  ppocrv6:
+    gpu: false
+    timeout: 180
+
+qc:
+  patchcore:
+    input_size: 384
+    conservative_mode: true
+  union:
+    enable_patchcore: true
+    enable_dino: false
+
+model_source: "local"
+hf_mirror: ""

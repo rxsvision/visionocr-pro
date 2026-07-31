@@ -99,10 +99,21 @@ def main():
     setup_logging(verbose="--verbose" in sys.argv or "-v" in sys.argv)
     logger.info("VisionOCR Pro 启动中 ...")
 
+    # 解析 --profile 参数 (部署环境分层)
+    profile = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--profile" and i + 1 < len(sys.argv):
+            profile = sys.argv[i + 1]
+        elif arg.startswith("--profile="):
+            profile = arg.split("=", 1)[1]
+    if profile:
+        logger.info("部署 Profile: %s", profile)
+
     try:
         from core.config import load_config
-        cfg = load_config()
-        logger.info("配置加载完成 (data_dir=%s)", cfg.get("data_dir", "data"))
+        cfg = load_config(profile=profile)
+        logger.info("配置加载完成 (data_dir=%s, device=%s)",
+                    cfg.get("data_dir", "data"), cfg.get("device", "auto"))
     except FileNotFoundError as e:
         logger.critical("配置文件缺失: %s", e)
         logger.critical("请确认 config.yaml 存在于: %s", ROOT / "config.yaml")
