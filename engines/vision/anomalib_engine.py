@@ -243,13 +243,17 @@ class AnomalibEngine(BaseEngine):
             return
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            str(path),
-            bank=self._memory_bank,
-            product_name=product_name,
+        save_kwargs = {
+            "bank": self._memory_bank,
+            "product_name": product_name,
             **{f"meta_{k}": v for k, v in self._bank_meta.items()},
-        )
-        logger.info("记忆库已保存: %s (%d patches)", path, self._memory_bank.shape[0])
+        }
+        if self._calibrated_threshold is not None:
+            save_kwargs["calibrated_threshold"] = self._calibrated_threshold
+        np.savez_compressed(str(path), **save_kwargs)
+        logger.info("记忆库已保存: %s (%d patches, threshold=%s)",
+                    path, self._memory_bank.shape[0],
+                    f"{self._calibrated_threshold:.4f}" if self._calibrated_threshold else "N/A")
 
     def load_bank(self, path: str | Path) -> bool:
         """从 .npz 文件加载记忆库。"""
@@ -264,9 +268,15 @@ class AnomalibEngine(BaseEngine):
                 k.replace("meta_", ""): data[k].item()
                 for k in data.files if k.startswith("meta_")
             }
+            # 恢复自适应阈值 (兼容旧bank文件: 无此字段时为None)
+            if "calibrated_threshold" in data.files:
+                self._calibrated_threshold = float(data["calibrated_threshold"])
+            else:
+                self._calibrated_threshold = None
             self._cache_bank_tensor()
-            logger.info("记忆库已加载: %s (%d patches)", path.name,
-                        self._memory_bank.shape[0])
+            logger.info("记忆库已加载: %s (%d patches, threshold=%s)",
+                        path.name, self._memory_bank.shape[0],
+                        f"{self._calibrated_threshold:.4f}" if self._calibrated_threshold else "N/A")
             return True
         except Exception as e:
             logger.error("加载记忆库失败: %s", e)
@@ -281,6 +291,8 @@ class AnomalibEngine(BaseEngine):
         self._memory_bank = None
         self._bank_meta = {}
         self._bank_tensor = None
+        self._calibrated_threshold = None
+        self._train_scores = []
         self.state = EngineState.UNLOADED
         try:
             import torch
