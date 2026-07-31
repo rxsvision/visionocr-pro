@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+
+from core.imutils import imread_unicode
 import numpy as np
 
 
@@ -59,7 +61,7 @@ def correct_perspective(image_path: str,
     if not cfg.get("enabled", True):
         return image_path, {"corrected": False, "reason": "disabled"}
 
-    img = cv2.imread(image_path)
+    img = imread_unicode(image_path)
     if img is None:
         return image_path, {"corrected": False, "reason": "imread_failed"}
 

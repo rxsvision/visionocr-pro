@@ -128,7 +128,8 @@ def run_anomaly_detection(registry, image_path: str,
     # 生成热力图叠加
     anomaly_map = result.get("anomaly_map")
     if anomaly_map is not None:
-        img = cv2.imread(image_path)
+        from core.imutils import imread_unicode
+        img = imread_unicode(image_path)
         if img is not None:
             h, w = img.shape[:2]
             heatmap = cv2.resize(anomaly_map, (w, h))

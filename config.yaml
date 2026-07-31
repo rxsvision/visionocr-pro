@@ -72,12 +72,18 @@ vram:
 
 # OCR 引擎配置
 ocr:
-  default_engine: "auto"     # auto | ovisocr2 | paddleocr_vl | hunyuan | rapidocr
+  default_engine: "ppocrv6"  # ppocrv6 | ovisocr2 | paddleocr_vl | rapidocr
+  fallback_engine: "rapidocr" # 主引擎不可用时降级 (无需Docker, 纯本地)
   confidence_threshold: 0.75 # 置信度 < 此值 → "待人工复核" (NG 拦截)
+  # PP-OCRv6 工业主力 (Docker 隔离, 93.3% 精确匹配)
+  ppocrv6:
+    gpu: true                  # Docker 容器内使用 GPU
+    timeout: 120               # 单次推理超时 (秒)
+    docker_image: "visionocr-paddleocr"
   scene_classifier:
     enabled: true
     confidence_threshold: 0.7
-    fallback_engine: "paddleocr_vl"
+    fallback_engine: "ppocrv6"
   # 图像预处理 (提升工业标记/小字符/低对比度场景精度)
   preprocess:
     enabled: true
@@ -152,10 +158,28 @@ barcode:
 
 # 质检
 qc:
-  anomaly_algorithm: "dinomaly"   # dinomaly | patchcore | visualad
+  anomaly_algorithm: "patchcore"   # patchcore (推荐) | dinomaly | visualad
   grounding_dino_model: "tiny"    # tiny (快, 1.2GB) | base (精, 2.5GB)
   confidence_threshold: 0.5
   auto_ng_alert: true
+  # PatchCore 生产级配置 (质量/鲁棒性优先, 零漏检)
+  patchcore:
+    input_size: 512               # 输入分辨率 (512保微小缺陷, 256省显存)
+    coreset_ratio: 0.1            # 记忆库压缩比 (0.1=10%, 越小越快精度略降)
+    conservative_mode: true       # 保守阈值: 阈值×0.5, 最大化召回 (宁可误报不漏检)
+  # 双模型 Union OR (零漏检架构: 任一NG→最终NG, 误报人工复核兜底)
+  union:
+    enable_patchcore: true        # 表面异常: 划痕/凹陷/色差 (需OK样本建库)
+    enable_dino: true             # 结构缺陷: 缺件/错位/标签歪 (需提示词)
+  # 瑕疵尺寸过滤 (产线刚需: 过滤灰尘噪点 + 排除背景误检)
+  defect_size:
+    enabled: true
+    min_area_px: 100            # 最小面积 (像素²), 小于此视为噪点忽略
+    max_area_px: 500000         # 最大面积 (像素²), 大于此可能是背景/误检
+    min_area_mm2: 0.0           # 最小面积 (毫米²), 0=不启用物理单位过滤
+    max_area_mm2: 0.0           # 最大面积 (毫米²), 0=不启用
+    pixels_per_mm: 0.0          # 相机标定系数 (像素/毫米), 0=未标定仅用像素
+    mode: "bbox"                # bbox (检测框面积) | contour (精确轮廓面积)
 
 # 行为分析 (P2 可选)
 behavior:

@@ -38,6 +38,7 @@ class EngineRegistry:
 
     # 引擎清单: (module_path, class_name)
     ENGINE_MANIFEST = [
+        ("engines.ocr.ppocrv6", "PPOCRv6Engine"),
         ("engines.ocr.ovisocr2", "OvisOCR2Engine"),
         ("engines.ocr.paddleocr_vl", "PaddleOCRVLEngine"),
         # ("engines.ocr.hunyuan_ocr", "HunyuanOCREngine"),  # 模块未实现, 待接入

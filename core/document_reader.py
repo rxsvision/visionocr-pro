@@ -21,6 +21,7 @@ try:
     import cv2
     import numpy as np
     from core.image_preprocess import preprocess_image
+    from core.imutils import imread_unicode
     _HAS_CV2 = True
 except ImportError:
     _HAS_CV2 = False
@@ -180,7 +181,7 @@ def _ocr_image(image_path: str, registry, ocr_engine: str) -> str:
         # 图像预处理 (对比度/纠偏/降噪/放大) — 提升工业相机/手机/扫描件识别率
         ocr_path = image_path
         if _HAS_CV2:
-            img = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            img = imread_unicode(image_path)
             if img is not None:
                 processed = preprocess_image(img)
                 # 写入临时文件供引擎读取
@@ -188,11 +189,13 @@ def _ocr_image(image_path: str, registry, ocr_engine: str) -> str:
                 cv2.imwrite(tmp_pp, processed)
                 ocr_path = tmp_pp
 
-        engine = registry.ensure_loaded(ocr_engine)
-        if not engine.is_ready():
-            engine = registry.ensure_loaded("rapidocr")
-        result = engine.infer(ocr_path)
-        text = result.get("text", "") if isinstance(result, dict) else ""
+        text = _try_ocr_engine(registry, ocr_engine, ocr_path)
+
+        # 推理级 fallback: 主引擎失败/空结果 → 降级 rapidocr
+        if not text and ocr_engine != "rapidocr":
+            fallback = "rapidocr"
+            logger.info("[OCR] 主引擎 %s 无结果, 降级 %s", ocr_engine, fallback)
+            text = _try_ocr_engine(registry, fallback, ocr_path)
 
         # 清理预处理临时文件
         if ocr_path != image_path and os.path.exists(ocr_path):
@@ -203,4 +206,23 @@ def _ocr_image(image_path: str, registry, ocr_engine: str) -> str:
         return text
     except Exception as e:  # noqa: BLE001
         logger.error("[ContractReader] OCR 失败 %s: %s", image_path, e)
+        return ""
+
+
+def _try_ocr_engine(registry, engine_name: str, image_path: str) -> str:
+    """尝试用指定引擎执行 OCR, 失败返回空字符串 (不抛异常)"""
+    try:
+        engine = registry.ensure_loaded(engine_name)
+        if not engine.is_ready():
+            return ""
+        result = engine.infer(image_path)
+        if isinstance(result, dict):
+            if result.get("error"):
+                logger.debug("[OCR] %s 返回错误: %s",
+                             engine_name, result["error"])
+                return ""
+            return result.get("text", "")
+        return ""
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[OCR] %s 异常: %s", engine_name, e)
         return ""

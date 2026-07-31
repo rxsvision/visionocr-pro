@@ -1,12 +1,15 @@
 # VisionOCR Pro - PaddleOCR 子服务 (PP-OCRv6)
 #
-# 用途: 在 Windows 上通过容器运行 PaddleOCR PP-OCRv6 (绕过原生 cudnn DLL 冲突)
+# 用途: 在 Windows 上通过容器运行 PaddleOCR PP-OCRv6 (绕过原生 PIR+OneDNN bug + cudnn DLL 冲突)
 # 构建: docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
-# 运行 (GPU): docker run --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
-# 运行 (CPU): docker run --rm -v "D:\images:/data" visionocr-paddleocr /data/test.png --device cpu
+# 运行 (GPU): docker run --gpus all -v "%USERPROFILE%\.paddlex:/root/.paddlex" -v "D:\images:/data" visionocr-paddleocr /data/test.png
+# 运行 (CPU): docker run --rm --gpus all -v "%USERPROFILE%\.paddlex:/root/.paddlex" -v "D:\images:/data" visionocr-paddleocr /data/test.png --device cpu
+#
+# 引擎集成: engines/ocr/ppocrv6.py (PPOCRv6Engine) 自动管理容器调用
+# 模型缓存: 挂载宿主机 ~/.paddlex → 容器 /root/.paddlex (首次下载后持久化)
 #
 # 输出: JSON 到 stdout, 格式与 _paddle_worker.py 一致
-#   {"text": "...", "lines": [...], "confidence": 0.95, "engine": "paddleocr_vl"}
+#   {"text": "...", "lines": [...], "confidence": 0.95, "engine": "ppocrv6"}
 #
 # 精度基准 (60张工业合成图, CPU):
 #   PP-OCRv6: 93.3% exact match, CER 0.021, 117ms/img
@@ -15,6 +18,11 @@
 FROM paddlepaddle/paddle:3.3.1-gpu-cuda12.6-cudnn9.5
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# 系统依赖: OpenCV 需要 libGL, paddle 需要 libgomp
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends libgl1 libgomp1 libglib2.0-0 && \
+    rm -rf /var/lib/apt/lists/*
 
 # 安装 PaddleOCR 3.7+ (含 PP-OCRv6 模型)
 RUN pip install --no-cache-dir "paddleocr>=3.7" --quiet

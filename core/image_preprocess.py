@@ -21,6 +21,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from core.imutils import imread_unicode
+
 # 输入尺寸保护: 超过此尺寸的图像先缩小再处理 (防 OOM)
 MAX_INPUT_SIZE = 4096
 
@@ -55,7 +57,7 @@ def preprocess_for_ocr(image_path: str,
     if not p.get("enabled", True):
         return image_path, meta
 
-    img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+    img = imread_unicode(image_path, flags=cv2.IMREAD_UNCHANGED)
     if img is None:
         return image_path, meta
 
@@ -154,7 +156,7 @@ def check_image_quality(image_path: str) -> dict:
         {"blur": bool, "blur_score": float, "exposure": str,
          "ok": bool, "warning": str}
     """
-    img = cv2.imread(image_path)
+    img = imread_unicode(image_path)
     if img is None:
         return {"blur": False, "blur_score": 0, "exposure": "unreadable",
                 "ok": False, "warning": "无法读取图像文件"}

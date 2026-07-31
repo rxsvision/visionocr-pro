@@ -18,6 +18,8 @@ from typing import Optional
 
 import numpy as np
 
+from core.imutils import imread_unicode
+
 logger = logging.getLogger("visionocr.defect")
 
 # ─── 中英缺陷词对照表 (工业外观常见) ─────────────────────────
@@ -91,14 +93,21 @@ def load_recipe(name: str) -> Optional[dict]:
 
 
 def save_recipe(name: str, prompt: str, threshold: float = 0.3,
-                note: str = "") -> None:
-    """保存产品配方。"""
+                note: str = "",
+                min_area_px: int = 0, max_area_px: int = 0,
+                pixels_per_mm: float = 0.0) -> None:
+    """保存产品配方 (含瑕疵尺寸阈值)。"""
     _RECIPES_DIR.mkdir(parents=True, exist_ok=True)
     data = {
         "name": name,
         "prompt": prompt,
         "threshold": threshold,
         "note": note,
+        "defect_size": {
+            "min_area_px": min_area_px,
+            "max_area_px": max_area_px,
+            "pixels_per_mm": pixels_per_mm,
+        },
     }
     p = _RECIPES_DIR / f"{name}.json"
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -113,9 +122,64 @@ def delete_recipe(name: str) -> bool:
     return False
 
 
+# ─── 瑕疵尺寸过滤 ─────────────────────────────────────────────
+def _bbox_area(box) -> float:
+    """计算检测框面积 (像素²)。box = [x1, y1, x2, y2]"""
+    x1, y1, x2, y2 = box
+    return max(0.0, (x2 - x1) * (y2 - y1))
+
+
+def _filter_by_size(boxes: list, labels: list, scores: list,
+                    size_cfg: dict | None = None) -> tuple[list, list, list, int]:
+    """按面积阈值过滤检测结果。
+
+    Args:
+        boxes/labels/scores: Grounding DINO 原始输出
+        size_cfg: defect_size 配置字典, None 或 enabled=False 时不过滤
+
+    Returns:
+        (filtered_boxes, filtered_labels, filtered_scores, rejected_count)
+    """
+    if not size_cfg or not size_cfg.get("enabled", False):
+        return boxes, labels, scores, 0
+
+    min_px = size_cfg.get("min_area_px", 0)
+    max_px = size_cfg.get("max_area_px", float("inf"))
+    min_mm2 = size_cfg.get("min_area_mm2", 0.0)
+    max_mm2 = size_cfg.get("max_area_mm2", 0.0)
+    px_per_mm = size_cfg.get("pixels_per_mm", 0.0)
+
+    # 物理面积阈值转换为像素面积 (需要标定系数)
+    if px_per_mm > 0:
+        px2_per_mm2 = px_per_mm * px_per_mm
+        if min_mm2 > 0:
+            min_px = max(min_px, min_mm2 * px2_per_mm2)
+        if max_mm2 > 0:
+            max_px = min(max_px, max_mm2 * px2_per_mm2)
+
+    kept_boxes, kept_labels, kept_scores = [], [], []
+    rejected = 0
+    for b, l, s in zip(boxes, labels, scores):
+        area = _bbox_area(b)
+        if area < min_px or area > max_px:
+            rejected += 1
+            logger.debug("尺寸过滤: area=%.0f px² (范围 %.0f~%.0f), label=%s",
+                         area, min_px, max_px, l)
+        else:
+            kept_boxes.append(b)
+            kept_labels.append(l)
+            kept_scores.append(s)
+
+    if rejected:
+        logger.info("尺寸过滤: %d/%d 个检测被过滤 (面积不在阈值内)",
+                    rejected, len(boxes))
+    return kept_boxes, kept_labels, kept_scores, rejected
+
+
 # ─── 检测 + 标注 ────────────────────────────────────────────
 def run_detection(registry, image_path: str, prompt: str = "",
-                  threshold: float = 0.3) -> dict:
+                  threshold: float = 0.3,
+                  size_cfg: dict | None = None) -> dict:
     """执行缺陷检测并返回标注结果。
 
     Args:
@@ -123,15 +187,17 @@ def run_detection(registry, image_path: str, prompt: str = "",
         image_path: 图像文件路径
         prompt: 缺陷描述词 (点分隔)
         threshold: 置信度阈值
+        size_cfg: 瑕疵尺寸过滤配置 (config.yaml 中 qc.defect_size 段)
 
     Returns:
         {"image": np.ndarray (BGR标注后), "verdict": "OK"/"NG",
-         "detections": [...], "count": int, "max_score": float}
+         "detections": [...], "count": int, "max_score": float,
+         "rejected_by_size": int}
     """
     import cv2
 
     # 读取图像
-    img = cv2.imread(image_path)
+    img = imread_unicode(image_path)
     if img is None:
         return {"image": None, "verdict": "ERROR", "detections": [],
                 "count": 0, "max_score": 0, "error": "无法读取图像"}
@@ -163,6 +229,10 @@ def run_detection(registry, image_path: str, prompt: str = "",
     labels = result["labels"]
     scores = result["scores"]
 
+    # 瑕疵尺寸过滤 (过滤噪点/背景误检)
+    boxes, labels, scores, rejected_by_size = _filter_by_size(
+        boxes, labels, scores, size_cfg)
+
     # 标注图像
     annotated = _draw_detections(img, boxes, labels, scores)
 
@@ -171,7 +241,7 @@ def run_detection(registry, image_path: str, prompt: str = "",
     max_score = max(scores) if scores else 0.0
 
     detections = [
-        {"box": b, "label": l, "score": s}
+        {"box": b, "label": l, "score": s, "area_px": round(_bbox_area(b), 1)}
         for b, l, s in zip(boxes, labels, scores)
     ]
 
@@ -181,7 +251,233 @@ def run_detection(registry, image_path: str, prompt: str = "",
         "detections": detections,
         "count": len(boxes),
         "max_score": round(max_score, 4),
+        "rejected_by_size": rejected_by_size,
     }
+
+
+# ─── PatchCore 异常检测 (生产主力路径) ─────────────────────────
+def run_anomaly_detection(registry, image_path: str,
+                          threshold: float | None = None) -> dict:
+    """执行 PatchCore 异常检测, 返回热力图标注结果。
+
+    与 run_detection (Grounding DINO bbox) 不同, 本函数基于正常样本记忆库,
+    检测任何偏离正常模式的区域。适用于表面缺陷 (划痕/凹陷/色差等)。
+
+    前置条件: anomalib 引擎已加载且记忆库已建立 (train 或 load_bank)。
+
+    Args:
+        registry: EngineRegistry 实例
+        image_path: 图像文件路径
+        threshold: 异常分数阈值 (None=使用配置, 保守模式自动减半)
+
+    Returns:
+        {"image": np.ndarray (BGR+热力图), "verdict": "OK"/"NG",
+         "score": float, "anomaly_map": np.ndarray, "grid_size": int,
+         "threshold_used": float}
+    """
+    import cv2
+
+    img = imread_unicode(image_path)
+    if img is None:
+        return {"image": None, "verdict": "ERROR", "score": 0,
+                "anomaly_map": None, "error": "无法读取图像"}
+
+    engine = registry.get("anomalib")
+    if engine is None:
+        return {"image": None, "verdict": "ERROR", "score": 0,
+                "anomaly_map": None, "error": "PatchCore 引擎未注册"}
+
+    if not engine.is_ready():
+        registry.ensure_loaded("anomalib")
+    if not engine.is_ready():
+        return {"image": None, "verdict": "ERROR", "score": 0,
+                "anomaly_map": None, "error": "PatchCore 模型加载失败"}
+
+    if not engine.has_bank:
+        return {"image": None, "verdict": "ERROR", "score": 0,
+                "anomaly_map": None,
+                "error": "记忆库为空, 请先注册OK样本 (train/load_bank)"}
+
+    # 推理
+    kwargs = {}
+    if threshold is not None:
+        kwargs["threshold"] = threshold
+    result = engine.infer(image_path, **kwargs)
+
+    if result.get("error"):
+        return {"image": img, "verdict": "ERROR", "score": 0,
+                "anomaly_map": None, "error": result["error"]}
+
+    score = result["score"]
+    anomaly_map = result["anomaly_map"]
+    pred = result["pred_label"]
+    thresh_used = result.get("threshold_used", 0)
+
+    # 叠加热力图到原图
+    annotated = _overlay_heatmap(img, anomaly_map)
+
+    # 大印章
+    draw_verdict_badge(annotated, pred)
+
+    return {
+        "image": annotated,
+        "verdict": pred,
+        "score": score,
+        "anomaly_map": anomaly_map,
+        "grid_size": result.get("grid_size", 0),
+        "threshold_used": thresh_used,
+    }
+
+
+def _overlay_heatmap(img: np.ndarray, anomaly_map: np.ndarray,
+                     alpha: float = 0.4) -> np.ndarray:
+    """将异常热力图叠加到原图上 (JET colormap)。"""
+    import cv2
+
+    h, w = img.shape[:2]
+    # 上采样热力图到原图尺寸
+    heat = cv2.resize(anomaly_map.astype(np.float32), (w, h),
+                      interpolation=cv2.INTER_CUBIC)
+    # 归一化到 0~255
+    heat = np.clip(heat * 255, 0, 255).astype(np.uint8)
+    # JET colormap
+    heat_color = cv2.applyColorMap(heat, cv2.COLORMAP_JET)
+    # 叠加
+    blended = cv2.addWeighted(img, 1 - alpha, heat_color, alpha, 0)
+    return blended
+
+
+# ─── 双模型 Union 检测 (零漏检架构) ─────────────────────────────
+def run_union_detection(registry, image_path: str,
+                        prompt: str = "",
+                        threshold: float | None = None,
+                        size_cfg: dict | None = None,
+                        config: dict | None = None) -> dict:
+    """双模型 Union OR 检测: PatchCore + Grounding DINO。
+
+    零漏检架构:
+    - PatchCore (表面异常): 划痕/凹陷/色差/污渍等, 基于正常样本记忆库
+    - Grounding DINO (结构缺陷): 缺件/错位/标签歪等, 基于文本提示词
+    - Union OR: 任一模型判定 NG → 最终 NG (宁可误报, 不可漏检)
+    - 误报由人工复核兜底 (产线标准流程)
+
+    Args:
+        registry: EngineRegistry 实例
+        image_path: 图像文件路径
+        prompt: Grounding DINO 缺陷描述词 (空=跳过 DINO)
+        threshold: 异常分数阈值 (None=使用配置)
+        size_cfg: 瑕疵尺寸过滤配置
+        config: 全局配置字典 (读取 qc.union 段)
+
+    Returns:
+        {"image": np.ndarray, "verdict": "OK"/"NG",
+         "patchcore": {...} | None, "dino": {...} | None,
+         "ng_sources": ["patchcore"] | ["dino"] | ["patchcore","dino"]}
+    """
+    import cv2
+
+    img = imread_unicode(image_path)
+    if img is None:
+        return {"image": None, "verdict": "ERROR",
+                "error": "无法读取图像", "ng_sources": []}
+
+    qc_cfg = (config or {}).get("qc", {})
+    union_cfg = qc_cfg.get("union", {})
+    enable_patchcore = union_cfg.get("enable_patchcore", True)
+    enable_dino = union_cfg.get("enable_dino", True)
+
+    pc_result = None
+    dino_result = None
+    ng_sources = []
+
+    # ── 1) PatchCore 表面异常检测 ──
+    if enable_patchcore:
+        engine = registry.get("anomalib")
+        if engine is not None:
+            if not engine.is_ready():
+                registry.ensure_loaded("anomalib")
+            if engine.is_ready() and engine.has_bank:
+                kwargs = {}
+                if threshold is not None:
+                    kwargs["threshold"] = threshold
+                pc_result = engine.infer(image_path, **kwargs)
+                if pc_result.get("error"):
+                    logger.warning("Union/PatchCore 错误: %s",
+                                   pc_result["error"])
+                    pc_result = None
+                elif pc_result.get("pred_label") == "NG":
+                    ng_sources.append("patchcore")
+            else:
+                logger.debug("Union: PatchCore 跳过 (未就绪或无记忆库)")
+
+    # ── 2) Grounding DINO 结构缺陷检测 ──
+    if enable_dino and prompt.strip():
+        dino_result = run_detection(registry, image_path,
+                                    prompt=prompt,
+                                    threshold=qc_cfg.get(
+                                        "confidence_threshold", 0.3),
+                                    size_cfg=size_cfg)
+        if dino_result.get("error"):
+            logger.warning("Union/DINO 错误: %s", dino_result.get("error"))
+            dino_result = None
+        elif dino_result.get("verdict") == "NG":
+            ng_sources.append("dino")
+
+    # ── 3) Union OR 判定 ──
+    verdict = "NG" if ng_sources else "OK"
+
+    # ── 4) 合成标注图 ──
+    annotated = img.copy()
+
+    # 叠加热力图 (PatchCore)
+    if pc_result and pc_result.get("anomaly_map") is not None:
+        annotated = _overlay_heatmap(annotated, pc_result["anomaly_map"],
+                                     alpha=0.35)
+
+    # 叠加检测框 (Grounding DINO)
+    if dino_result and dino_result.get("detections"):
+        boxes = [d["box"] for d in dino_result["detections"]]
+        labels = [d["label"] for d in dino_result["detections"]]
+        scores = [d["score"] for d in dino_result["detections"]]
+        annotated = _draw_detections(annotated, boxes, labels, scores)
+
+    # 统一印章 (覆盖 _draw_detections 内部的印章)
+    total_ng = len(ng_sources)
+    draw_verdict_badge(annotated, verdict,
+                       count=dino_result.get("count", 0) if dino_result else 0)
+
+    # ── 5) 组装结果 ──
+    result = {
+        "image": annotated,
+        "verdict": verdict,
+        "ng_sources": ng_sources,
+        "patchcore": None,
+        "dino": None,
+    }
+
+    if pc_result:
+        result["patchcore"] = {
+            "score": pc_result.get("score", 0),
+            "pred_label": pc_result.get("pred_label", "?"),
+            "threshold_used": pc_result.get("threshold_used", 0),
+        }
+
+    if dino_result:
+        result["dino"] = {
+            "verdict": dino_result.get("verdict", "?"),
+            "count": dino_result.get("count", 0),
+            "max_score": dino_result.get("max_score", 0),
+            "detections": dino_result.get("detections", []),
+            "rejected_by_size": dino_result.get("rejected_by_size", 0),
+        }
+
+    logger.info("Union 检测: verdict=%s, sources=%s, pc_score=%.4f, "
+                "dino_count=%d",
+                verdict, ng_sources,
+                pc_result.get("score", 0) if pc_result else -1,
+                dino_result.get("count", 0) if dino_result else -1)
+
+    return result
 
 
 def draw_verdict_badge(img: np.ndarray, verdict: str, count: int = 0,

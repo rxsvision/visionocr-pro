@@ -109,14 +109,21 @@ def main():
 
 
 def _norm_box(box):
+    """归一化检测框为 [[x,y], [x,y], [x,y], [x,y]]。
+
+    兼容: list of lists, list of tuples, numpy array (4,2), flat list。
+    """
     try:
-        if box is not None and len(box) > 0:
-            first = box[0]
-            if isinstance(first, (list, tuple)):
-                return [[float(p[0]), float(p[1])] for p in box]
-            pts = list(box)
-            return [[float(pts[i]), float(pts[i + 1])]
-                    for i in range(0, len(pts) - 1, 2)]
+        if box is None or len(box) == 0:
+            return []
+        first = box[0]
+        # 二维结构: [[x,y], ...] 或 numpy array shape (N, 2)
+        if hasattr(first, '__len__') and len(first) >= 2:
+            return [[float(p[0]), float(p[1])] for p in box]
+        # 一维 flat: [x1,y1,x2,y2,...]
+        pts = list(box)
+        return [[float(pts[i]), float(pts[i + 1])]
+                for i in range(0, len(pts) - 1, 2)]
     except Exception:
         pass
     return []

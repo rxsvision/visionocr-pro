@@ -37,6 +37,11 @@ def _get_dummy_path() -> str:
 def warmup_engines(registry, config: dict) -> dict:
     """预热默认引擎, 返回预热报告。
 
+    策略:
+    - 尝试预热 default_engine (ppocrv6)
+    - 若失败 (Docker 未运行等), 自动降级预热 fallback_engine (rapidocr)
+    - 预热失败不阻断启动
+
     Returns:
         {"ocr": {"engine": str, "load_sec": float, "infer_sec": float, "ok": bool},
          "total_sec": float}
@@ -46,26 +51,38 @@ def warmup_engines(registry, config: dict) -> dict:
 
     # 确定默认 OCR 引擎
     ocr_cfg = config.get("ocr", {}) or {}
-    default_engine = ocr_cfg.get("default_engine", "auto")
+    default_engine = ocr_cfg.get("default_engine", "rapidocr")
+    fallback_engine = ocr_cfg.get("fallback_engine", "rapidocr")
 
-    # auto 模式: 按优先级选择
     if default_engine == "auto":
-        # 优先 rapidocr (轻量, 0.5GB, 启动快), 作为基础引擎预热
-        # paddleocr_vl / ovisocr2 按需加载 (大模型, 首次使用时再加载)
         default_engine = "rapidocr"
 
-    logger.info("预热引擎: %s ...", default_engine)
+    # 尝试预热主引擎
+    ok = _warmup_one(registry, default_engine, report)
 
+    # 主引擎失败 → 降级预热 fallback (确保启动后有可用 OCR)
+    if not ok and fallback_engine != default_engine:
+        logger.info("主引擎 %s 预热失败, 降级预热 %s",
+                    default_engine, fallback_engine)
+        _warmup_one(registry, fallback_engine, report)
+
+    report["total_sec"] = round(time.time() - t_start, 2)
+    return report
+
+
+def _warmup_one(registry, engine_name: str, report: dict) -> bool:
+    """预热单个引擎, 成功返回 True"""
+    logger.info("预热引擎: %s ...", engine_name)
     try:
         t0 = time.time()
-        engine = registry.ensure_loaded(default_engine)
+        engine = registry.ensure_loaded(engine_name)
         load_sec = time.time() - t0
 
         if not engine.is_ready():
-            logger.warning("引擎 %s 加载失败, 跳过预热", default_engine)
-            report["ocr"] = {"engine": default_engine, "ok": False,
+            logger.warning("引擎 %s 加载失败, 跳过预热", engine_name)
+            report["ocr"] = {"engine": engine_name, "ok": False,
                              "error": "load failed"}
-            return report
+            return False
 
         # dummy 推理: 触发 CUDA kernel JIT 编译 + 内存分配
         t0 = time.time()
@@ -73,18 +90,25 @@ def warmup_engines(registry, config: dict) -> dict:
         result = engine.infer(dummy_path)
         infer_sec = time.time() - t0
 
+        # 检查推理是否真正成功 (Docker 引擎可能 load 成功但 infer 报错)
+        if isinstance(result, dict) and result.get("error"):
+            logger.warning("引擎 %s 推理失败: %s", engine_name,
+                           result["error"])
+            report["ocr"] = {"engine": engine_name, "ok": False,
+                             "error": result["error"]}
+            return False
+
         report["ocr"] = {
-            "engine": default_engine,
+            "engine": engine_name,
             "load_sec": round(load_sec, 2),
             "infer_sec": round(infer_sec, 2),
             "ok": True,
         }
         logger.info("预热完成: %s (加载 %.1fs + 推理 %.2fs)",
-                    default_engine, load_sec, infer_sec)
+                    engine_name, load_sec, infer_sec)
+        return True
 
     except Exception as e:
-        logger.warning("预热异常 (非致命, 降级为按需加载): %s", e)
-        report["ocr"] = {"engine": default_engine, "ok": False, "error": str(e)}
-
-    report["total_sec"] = round(time.time() - t_start, 2)
-    return report
+        logger.warning("预热异常 (非致命): %s: %s", engine_name, e)
+        report["ocr"] = {"engine": engine_name, "ok": False, "error": str(e)}
+        return False
