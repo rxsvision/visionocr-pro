@@ -128,7 +128,7 @@ def run_anomaly_detection(registry, image_path: str,
     # 生成热力图叠加
     anomaly_map = result.get("anomaly_map")
     if anomaly_map is not None:
-        from core.imutils import imread_unicode
+        from core.imutils import imread_unicode, imwrite_unicode
         img = imread_unicode(image_path)
         if img is not None:
             h, w = img.shape[:2]
@@ -143,6 +143,20 @@ def run_anomaly_detection(registry, image_path: str,
             cv2.putText(overlay, f"{label} ({result['score']:.3f})",
                         (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
             result["heatmap_overlay"] = overlay
+
+            # 审计保存: 热力图PNG持久化 (产线追溯)
+            try:
+                import time as _time
+                results_dir = Path(__file__).parent.parent / "results" / "heatmaps"
+                results_dir.mkdir(parents=True, exist_ok=True)
+                ts = _time.strftime("%Y%m%d_%H%M%S")
+                stem = Path(image_path).stem
+                save_path = results_dir / f"{stem}_{ts}_{label}.png"
+                imwrite_unicode(str(save_path), overlay)
+                result["heatmap_path"] = str(save_path)
+                logger.info("热力图已保存: %s", save_path.name)
+            except Exception as e:
+                logger.debug("热力图保存失败 (非致命): %s", e)
         else:
             result["heatmap_overlay"] = None
     else:

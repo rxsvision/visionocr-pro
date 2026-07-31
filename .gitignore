@@ -35,3 +35,6 @@ Desktop.ini
 .env
 *.key
 credentials.json
+
+# 运行时生成的结果文件 (热力图/审计)
+results/
