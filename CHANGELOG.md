@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-01
+
+### Added
+
+- **YOLO 少样本结构缺陷检测** (`engines/vision/yolo_defect.py`): ultralytics/YOLOv8 引擎，Union 零漏检第三检测源；GPU OOM 自动降级 CPU；中文类别名映射
+- **Union 零漏检模式接线到 UI**: 工程师模式新增第三检测模式「Union 零漏检 (三源OR)」——PatchCore + Grounding DINO + YOLO 任一 NG 即 NG；明细表带源前缀，判定显示触发源，结果落库
+- **YOLO 产品门控** (`core/yolo_products.py`): 权重按产品绑定 `models/yolo/{产品名}.pt`，无产品上下文或该产品未训练时 Union 自动跳过 YOLO 源，根除跨域误报（实测 PCB 权重把金属划伤误判为「鼠咬」）
+- **YOLO 微调管线**: `finetune/prepare_pcb_data.py`（VOC XML → YOLO 格式，分层 train/val）+ `finetune/train_yolo.py`（ultralytics 编排）
+- **条码识别引擎** (`engines/vision/barcode.py`): pyzbar/ZBar 后端，OCR Tab 自动并行检测，结果写入 meta.barcodes 供 MES/ERP
+- **配置分层**: `profiles/` 目录 + `--profile` 启动参数，多产品/多产线配置切换
+- **后台异步预热** (`core/warmup.py`): 次要引擎后台预加载，消除首次切换延迟
+- **结构化日志 + 运行状态卡片**: JSONL 日志（`logs/visionocr.jsonl`，RotatingFileHandler）；Gradio 状态卡片（GPU/引擎/耗时，`gr.Timer` 自动刷新）
+- **推理耗时统计** (`core/infer_stats.py`): 滑动窗口平均，线程安全，`Timer` 上下文管理器
+- **错误恢复与降级链路** (`core/resilience.py`): 产线级容错
+- **热力图审计保存**: 检测结果 PNG 持久化（产线追溯）
+- **PP-OCRv6 Docker 引擎** (`engines/ocr/ppocrv6.py`): 容器隔离，规避 Windows paddle 3.x bug；主引擎 + RapidOCR 兜底
+- **CI 最小测试依赖** (`requirements-test.txt`): GitHub Actions 在 ubuntu/windows × py3.11/3.12 真实跑通 pytest
+- **DEPLOY.md 4.1**: YOLO 权重本机训练 + 产品门控部署段落；`scripts/validate_cross_domain.py` 跨域验证工具
+
+### Fixed
+
+- **CI 最小依赖缺漏**: 原 `ci.yml` 仅装 pytest+pyyaml，但 `test_barcode` 模块级 import cv2/numpy、fixture 需 pyzbar → 收集阶段即失败；现装 `requirements-test.txt`，ubuntu 补 `apt libzbar0`
+- **YOLO 测试 skip 条件混淆**: 真实依赖是 ultralytics 而非「冒烟权重存在」，补 `pytest.importorskip("ultralytics")` 使轻量环境与本地行为一致
+- **requirements.txt 运行时缺口**: 补 numpy/opencv-python（cv2 被 QC/相机直接 import，干净部署原会崩溃）、pyzbar
+- **PatchCore 生产级优化**: GPU coreset（160s→5s）+ 有效区域裁切 + held-out 校准（P99×1.2）+ 自适应阈值持久化（save_bank/load_bank）
+- **infer() grid_size 未定义**: 修复 PCB 推理崩溃
+
+### Changed
+
+- **requirements.txt**: numpy/opencv-python/pyzbar 入核心依赖；ultralytics 列为可选（AGPL-3.0，仅 YOLO 检测源需要）
+- **README**: 测试数 17 → 45；技术栈补 YOLO/Union/条码；质检管线补「工程师模式三选一」；core/ 结构树补 infer_stats/status/resilience/anomaly_bank/yolo_products
+- **DEPLOY.md**: 依赖矩阵与 requirements.txt 对齐（3.2 补 NumPy/OpenCV/pyzbar，3.3 补 ultralytics）
+- **归档**: `test_ppocrv6_accuracy.py` → `scripts/eval_ppocrv6_accuracy.py`（去 test_ 前缀免 pytest 误收集）
+
 ## [1.0.2] - 2026-07-31
 
 ### Fixed
