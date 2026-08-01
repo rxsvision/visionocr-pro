@@ -29,7 +29,8 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 | 推理框架 | PyTorch 2.x + CUDA 12.6 | GPU 加速，FP16 推理 |
 | OCR 引擎 | RapidOCR / PaddleOCR-VL / OvisOCR2 / HunyuanOCR / MinerU | 多引擎 LRU 显存管理 |
 | LLM | Ollama (qwen3-vl:8b) + 云端 API (DeepSeek) | 分级路由 |
-| 视觉检测 | Grounding DINO + PatchCore (Anomalib) | 零样本 + 少样本缺陷检测 |
+| 视觉检测 | Grounding DINO + PatchCore + YOLO | 零样本/少样本/Union 零漏检三源 OR |
+| 条码识别 | pyzbar (ZBar) | OCR Tab 自动并行检测 |
 | 3D 融合 | Sizector 结构光 + pythonnet | 深度图 + RGB 融合检测 |
 | 数据存储 | SQLite (WAL) | 合同、应收、审计日志 |
 | 调度 | APScheduler | 回款提醒自动化 |
@@ -68,6 +69,8 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+> **质检检测模式**（工程师模式三选一）：① 零样本 Grounding DINO（提示词驱动）｜② 少样本 PatchCore（OK 样本建库，可叠加 3D 深度融合）｜③ Union 零漏检（PatchCore + DINO + YOLO 三源 OR，任一 NG 即 NG；YOLO 按产品门控防跨域误报）。漏检零容忍，误报由人工复核兜底。
 
 ### 模型依赖
 
@@ -175,7 +178,10 @@ visionocr-pro/
 ├── core/                   # 核心业务逻辑
 │   ├── config.py           #   配置加载 + 环境变量替换
 │   ├── database.py         #   SQLite 数据层 + 审计日志 + 自动备份
-│   ├── warmup.py           #   引擎预热 (消除冷启动)
+│   ├── warmup.py           #   引擎预热 (后台异步, 消除冷启动)
+│   ├── infer_stats.py      #   推理耗时统计 (滑动窗口, 线程安全)
+│   ├── status.py           #   运行状态聚合 (GPU/引擎/耗时)
+│   ├── resilience.py       #   错误恢复与降级链路
 │   ├── contract_extractor.py # 合同要素抽取 (LLM + 规则)
 │   ├── payment_store.py    #   应收/回款数据操作
 │   ├── risk_engine.py      #   合同风险扫描
@@ -183,7 +189,9 @@ visionocr-pro/
 │   ├── perspective_correct.py # 透视纠偏
 │   ├── postprocess.py      #   OCR 后处理纠错
 │   ├── depth_fusion.py     #   3D 深度融合
-│   ├── defect_detector.py  #   缺陷检测调度
+│   ├── defect_detector.py  #   缺陷检测调度 (DINO/PatchCore/Union)
+│   ├── anomaly_bank.py     #   PatchCore 特征库 (按产品隔离)
+│   ├── yolo_products.py    #   YOLO 权重产品门控 (防跨域误报)
 │   ├── camera.py           #   海康相机封装
 │   ├── sizector_camera.py  #   Sizector 3D 相机
 │   ├── scheduler.py        #   定时提醒调度
@@ -205,10 +213,10 @@ visionocr-pro/
 │   ├── tab_qc.py           #   工业质检 Tab
 │   ├── tab_behavior.py     #   行为分析 Tab (P2)
 │   └── tab_settings.py     #   设置 + 引擎健康面板
-├── finetune/               # PP-OCRv6 微调工具链
+├── finetune/               # 微调工具链 (PP-OCRv6 + YOLO 缺陷检测)
 ├── scripts/                # 辅助脚本
 ├── scenarios/              # 场景配置
-├── tests/                  # pytest 单元测试 (17 tests)
+├── tests/                  # pytest 单元测试 (45 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 
@@ -255,7 +263,8 @@ Key advantages:
 | Inference | PyTorch 2.x + CUDA 12.6 | GPU-accelerated, FP16 |
 | OCR Engines | RapidOCR / PaddleOCR-VL / OvisOCR2 / HunyuanOCR / MinerU | LRU VRAM management |
 | LLM | Ollama (qwen3-vl:8b) + Cloud API (DeepSeek) | Tiered routing |
-| Vision | Grounding DINO + PatchCore (Anomalib) | Zero-shot + few-shot defect detection |
+| Vision | Grounding DINO + PatchCore + YOLO | Zero-shot / few-shot / Union zero-miss (3-source OR) |
+| Barcode | pyzbar (ZBar) | Auto parallel detection in OCR tab |
 | 3D Fusion | Sizector structured light + pythonnet | Depth + RGB fusion |
 | Storage | SQLite (WAL) | Contracts, receivables, audit logs |
 | Scheduling | APScheduler | Payment reminder automation |

@@ -8,6 +8,10 @@ requests>=2.28
 pyyaml>=6.0
 apscheduler>=3.10
 
+# 数值与图像基础 (core/imutils/defect_detector/anomaly_bank/camera 直接依赖)
+numpy>=1.24
+opencv-python>=4.8
+
 # ─── GPU 推理栈 (CUDA 12.x + RTX 显卡推荐) ─────────────────
 # PyTorch (CUDA 12.6): pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 torch>=2.0
@@ -28,6 +32,15 @@ accelerate>=0.30
 
 # OCR 轻量兜底
 rapidocr-onnxruntime>=1.3
+
+# 条码/二维码识别 (engines/vision/barcode.py, OCR Tab 自动并行检测)
+# Linux 需系统包: apt-get install libzbar0; Windows 的 wheel 自带 zbar DLL
+pyzbar>=0.1.9
+
+# YOLO 少样本结构缺陷检测 (engines/vision/yolo_defect.py, 可选)
+# ⚠ AGPL-3.0 许可; 仅在训练/运行 YOLO 检测源时需要 (Union 零漏检第三源, 按产品门控)。
+#   训练流程见 DEPLOY.md 4.1; 不安装时 Union 自动跳过 YOLO 源, 不影响其他功能。
+# ultralytics>=8.2
 
 # 3D 深度相机 Sizector (Phase 4C, optional)
 # 仅 Windows + .NET Framework 4.7.2+ 需要; 通过 .NET wrapper 调用 MPSizectorS SDK

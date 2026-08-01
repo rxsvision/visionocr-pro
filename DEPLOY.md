@@ -82,6 +82,8 @@ chmod +x setup.sh && ./setup.sh
 | RapidOCR | ≥ 1.3 | 轻量 OCR 引擎 | pip |
 | transformers | ≥ 4.40 | Grounding DINO 加载 | pip |
 | onnxruntime-gpu | ≥ 1.17 | RapidOCR 加速 | pip |
+| NumPy / OpenCV | ≥ 1.24 / ≥ 4.8 | 数值与图像基础 (QC/相机) | pip |
+| pyzbar | ≥ 0.1.9 | 条码识别 (Linux 需 `apt install libzbar0`) | pip |
 | OvisOCR2 权重 | — | 高精度文档 OCR | download_models.py |
 | qwen3-vl:8b | — | 合同 LLM 抽取 | ollama pull |
 | Grounding DINO | — | 零样本缺陷检测 | transformers 自动缓存 |
@@ -92,6 +94,7 @@ chmod +x setup.sh && ./setup.sh
 |------|------|------|
 | Docker Desktop + WSL2 | Windows 需要 PaddleOCR 时 | 容器内运行 PaddleOCR-VL |
 | PaddlePaddle GPU | 仅 Linux | PaddleOCR-VL 引擎（Linux 无冲突） |
+| ultralytics | 需 YOLO 结构缺陷检测时 | YOLO 检测源（AGPL-3.0，Union 第三源，按产品门控；见 4.1） |
 | CUDA Toolkit | 仅开发/编译自定义算子时 | 运行时只需驱动，不需 Toolkit |
 
 ### 3.4 不支持项
