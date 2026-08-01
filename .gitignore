@@ -36,10 +36,11 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# ─── 环境 & 密钥 ──────────────────────────────────────────────
+# ─── 环境 & 密钥 & 本地路径 ─────────────────────────────────────
 .env
 *.key
 credentials.json
+scripts/local_data_paths.yaml
 
 # 运行时生成的结果文件 (热力图/审计)
 results/

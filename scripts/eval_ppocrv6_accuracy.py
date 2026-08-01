@@ -1,15 +1,21 @@
 """PP-OCRv6 Docker OCR - Industrial Image Recognition Accuracy Test
 
-Tests character recognition on real industrial images:
-1. Chip character BMPs (high-res ~12MB each)
-2. Cosmetic bottle character recognition
-3. test426 sample images
+Tests character recognition on real industrial images.
+Image directories are read from scripts/local_data_paths.yaml (gitignored).
+
+Usage:
+  1. Copy scripts/local_data_paths.example.yaml → scripts/local_data_paths.yaml
+  2. Fill in your local data directories under the `ocr_eval` section
+  3. Run: python scripts/eval_ppocrv6_accuracy.py
 """
 import os
 import sys
 import time
 import glob
 import io
+from pathlib import Path
+
+import yaml
 
 # Fix Windows console encoding for Unicode OCR output
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -19,6 +25,24 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from engines.ocr.ppocrv6 import PPOCRv6Engine
+
+_CONFIG_PATH = Path(__file__).resolve().parent / "local_data_paths.yaml"
+
+
+def _load_ocr_eval_paths() -> dict[str, str]:
+    """从本地配置加载 OCR 评估数据路径。"""
+    if not _CONFIG_PATH.is_file():
+        print(f"[ERROR] 未找到本地数据配置: {_CONFIG_PATH}")
+        print(f"        请复制 local_data_paths.example.yaml → local_data_paths.yaml")
+        print(f"        并在 ocr_eval 段填入本机实际数据目录。")
+        sys.exit(1)
+    with open(_CONFIG_PATH, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    paths = cfg.get("ocr_eval", {})
+    if not paths:
+        print("[ERROR] local_data_paths.yaml 中 ocr_eval 段为空。")
+        sys.exit(1)
+    return paths
 
 
 def format_result(result: dict) -> str:
@@ -40,6 +64,9 @@ def run_test():
     print("PP-OCRv6 Docker OCR - Industrial Image Recognition Test")
     print("=" * 70)
 
+    # Load data paths from local config
+    eval_paths = _load_ocr_eval_paths()
+
     # Configuration
     config = {"ocr": {"ppocrv6": {"gpu": True, "timeout": 180}}}
 
@@ -56,23 +83,25 @@ def run_test():
         print("ERROR: Engine failed to load. Aborting.")
         return
 
-    # Collect test images
+    # Collect test images from configured paths
     test_groups = []
+    group_configs = [
+        ("chip_characters", "Chip Characters", "*.bmp", 5),
+        ("bottle_characters", "Bottle Characters", "*.bmp", None),
+        ("mixed_samples", "Mixed Samples", "*.png", 3),
+    ]
+    for key, label, pattern, limit in group_configs:
+        dir_path = eval_paths.get(key, "")
+        if not dir_path:
+            continue
+        files = sorted(glob.glob(os.path.join(dir_path, pattern)))
+        if limit:
+            files = files[:limit]
+        test_groups.append((f"{label} ({len(files)} images)", files))
 
-    # Group 1: Chip character BMPs (first 5)
-    chip_dir = r"X:\data\project_f\chip"
-    chip_files = sorted(glob.glob(os.path.join(chip_dir, "*.bmp")))[:5]
-    test_groups.append(("Chip Characters (BMP ~12MB)", chip_files))
-
-    # Group 2: Cosmetic bottle character recognition
-    bottle_dir = r"X:\data\project_e\chars"
-    bottle_files = sorted(glob.glob(os.path.join(bottle_dir, "*.bmp")))
-    test_groups.append(("Cosmetic Bottle Characters", bottle_files))
-
-    # Group 3: test426 samples (first 3)
-    test426_dir = r"X:\data\project_e	est426"
-    test426_files = sorted(glob.glob(os.path.join(test426_dir, "*.png")))[:3]
-    test_groups.append(("test426 Samples", test426_files))
+    if not test_groups:
+        print("\n[WARN] No valid data directories configured. Nothing to test.")
+        return
 
     # Run tests
     all_results = []
@@ -80,7 +109,7 @@ def run_test():
 
     for group_name, files in test_groups:
         print(f"\n{'=' * 70}")
-        print(f"  GROUP: {group_name} ({len(files)} images)")
+        print(f"  GROUP: {group_name}")
         print(f"{'=' * 70}")
 
         if not files:

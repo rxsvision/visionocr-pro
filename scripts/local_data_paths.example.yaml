@@ -1,0 +1,24 @@
+# ============================================================
+#  本地数据路径配置 (此文件已 gitignore, 不会提交到仓库)
+#  复制 local_data_paths.example.yaml → local_data_paths.yaml
+#  然后填入你本机的实际数据目录
+# ============================================================
+
+# 跨域验证数据集 (validate_cross_domain.py 使用)
+# 每个 key 是自定义标签, value 是图片目录绝对路径
+cross_domain:
+  project_a: "X:\\your_data\\project_a\\images"
+  project_b: "X:\\your_data\\project_b\\scratch"
+  project_c: "X:\\your_data\\project_b\\oil_stain"
+  project_d: "X:\\your_data\\project_c\\images"
+  project_e: "X:\\your_data\\project_d\\film"
+  project_f: "X:\\your_data\\project_d\\thread"
+
+# OCR 精度评估数据集 (eval_ppocrv6_accuracy.py 使用)
+ocr_eval:
+  chip_characters: "X:\\your_data\\chip_ocr\\bmp"
+  bottle_characters: "X:\\your_data\\bottle_ocr\\bmp"
+  mixed_samples: "X:\\your_data\\mixed_samples"
+
+# 输出目录 (可选, 默认 <project_root>/results/)
+# output_dir: "D:\\your_output\\results"

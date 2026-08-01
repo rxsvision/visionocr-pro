@@ -67,3 +67,20 @@ jobs:
             exit 1
           fi
           echo "No hardcoded secrets detected"
+
+      - name: Check no hardcoded local data paths
+        run: |
+          # Block user-specific drive paths (E:\, D:\rxs, D:\00_, etc.)
+          # Allow: C:\Program Files (standard SDK), D:\images (generic Docker example)
+          VIOLATIONS=$(grep -rn --include="*.py" -E '[A-Z]:\\\\' . \
+            | grep -v '.venv/' \
+            | grep -v 'C:\\\\Program Files' \
+            | grep -v 'local_data_paths' \
+            | grep -v '#' \
+            || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "ERROR: Hardcoded local paths found in .py files:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "No hardcoded local data paths in Python files"

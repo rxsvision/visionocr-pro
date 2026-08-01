@@ -1,4 +1,4 @@
-"""跨域验证: 在三个真实工业项目图像上测试 YOLO + PatchCore
+"""跨域验证: 在多个真实工业项目图像上测试 YOLO + PatchCore 迁移性
 
 数据集性质 (诚实前提):
 - 均为小样本打光可行性集, 无正常/缺陷划分, 无 ground-truth 框
@@ -6,27 +6,51 @@
 
 测试内容:
 1. YOLO(PCB训练) 跨域推理 → 预期近零检出 (PCB结构缺陷→金属/玻璃表面不迁移)
-2. PatchCore 留一法 (project_b inner wall, 缺陷图互建库) → 仅演示, 非有效指标
+2. PatchCore 留一法 (缺陷图互建库) → 仅演示, 非有效指标
+
+配置:
+  复制 scripts/local_data_paths.example.yaml → scripts/local_data_paths.yaml
+  填入本机实际数据目录后运行。
 """
 import sys
 import time
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.stdout.reconfigure(encoding="utf-8")
 
 from core.imutils import imread_unicode, imwrite_unicode
 
-PROJECTS = {
-    "project_a": Path(r"X:\data\project_a"),
-    "project_b_scratch": Path(r"X:\data\project_b\scratch"),
-    "project_b_oil": Path(r"X:\data\project_b\oil"),
-    "project_c": Path(r"X:\data\project_c"),
-    "化妆瓶_薄膜": Path(r"X:\data\project_dilm"),
-    "化妆瓶_瓶口螺纹": Path(r"X:\data\project_d	hread"),
-}
+_CONFIG_PATH = Path(__file__).resolve().parent / "local_data_paths.yaml"
 IMG_EXT = {".bmp", ".jpg", ".jpeg", ".png"}
-OUT_DIR = Path(r"results/cross_domain")
+
+
+def _load_projects() -> dict[str, Path]:
+    """从本地配置加载数据集路径 (配置文件已 gitignore)。"""
+    if not _CONFIG_PATH.is_file():
+        print(f"[ERROR] 未找到本地数据配置: {_CONFIG_PATH}")
+        print(f"        请复制 local_data_paths.example.yaml → local_data_paths.yaml")
+        print(f"        并填入本机实际数据目录。")
+        sys.exit(1)
+    with open(_CONFIG_PATH, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    raw = cfg.get("cross_domain", {})
+    if not raw:
+        print("[ERROR] local_data_paths.yaml 中 cross_domain 段为空。")
+        sys.exit(1)
+    return {k: Path(v) for k, v in raw.items()}
+
+
+def _output_dir() -> Path:
+    if _CONFIG_PATH.is_file():
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        od = cfg.get("output_dir")
+        if od:
+            return Path(od)
+    return Path(__file__).resolve().parents[1] / "results" / "cross_domain"
 
 
 def _imgs(folder: Path, limit: int = 6) -> list[Path]:
@@ -48,14 +72,14 @@ def _imgs(folder: Path, limit: int = 6) -> list[Path]:
     return out
 
 
-def test_yolo_cross_domain():
+def test_yolo_cross_domain(projects: dict[str, Path]):
     from engines.vision.yolo_defect import YOLODefectEngine
     eng = YOLODefectEngine({"yolo_defect": {"confidence_threshold": 0.25,
                                             "imgsz": 1280}})
     eng.load()
     print(f"\n{'='*60}\n[YOLO 跨域] state={eng.state.value}\n{'='*60}")
     total_imgs = total_det = 0
-    for name, folder in PROJECTS.items():
+    for name, folder in projects.items():
         imgs = _imgs(folder)
         det = 0
         labels = []
@@ -73,13 +97,18 @@ def test_yolo_cross_domain():
           f"(PCB模型跨域迁移率 ≈ {total_det}/{total_imgs})")
 
 
-def test_patchcore_loo():
-    """留一法演示: project_b inner wall 划伤+油污, 缺陷图互建库。"""
+def test_patchcore_loo(projects: dict[str, Path]):
+    """留一法演示: 取前两个数据集的缺陷图互建库。"""
     from engines.vision.anomalib_engine import AnomalibEngine
-    print(f"\n{'='*60}\n[PatchCore 留一法演示] project_b inner wall (非有效指标, 仅方向)\n{'='*60}")
-    scratch = _imgs(PROJECTS["project_b_scratch"], limit=10)
-    oil = _imgs(PROJECTS["project_b_oil"], limit=5)
-    all_imgs = scratch + oil
+    keys = list(projects.keys())
+    if len(keys) < 2:
+        print("\n[PatchCore 留一法] 需至少 2 个数据集, 跳过。")
+        return
+    k1, k2 = keys[1], keys[2] if len(keys) > 2 else keys[0]
+    print(f"\n{'='*60}\n[PatchCore 留一法演示] {k1} + {k2} (非有效指标, 仅方向)\n{'='*60}")
+    imgs_a = _imgs(projects[k1], limit=10)
+    imgs_b = _imgs(projects[k2], limit=5)
+    all_imgs = imgs_a + imgs_b
     if len(all_imgs) < 5:
         print("  样本不足, 跳过")
         return
@@ -105,7 +134,9 @@ def test_patchcore_loo():
 
 
 if __name__ == "__main__":
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    test_yolo_cross_domain()
-    test_patchcore_loo()
-    print(f"\n[Done] 结果目录: {OUT_DIR}")
+    projects = _load_projects()
+    out_dir = _output_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    test_yolo_cross_domain(projects)
+    test_patchcore_loo(projects)
+    print(f"\n[Done] 结果目录: {out_dir}")
