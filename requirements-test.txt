@@ -1,0 +1,18 @@
+# VisionOCR Pro - CI 最小测试依赖
+# ─────────────────────────────────────────────────────────────
+# 本文件仅含 pytest 套件 (tests/) 跑通所需的**最小**依赖集。
+# 重推理栈 (torch / transformers / gradio / ultralytics / paddleocr)
+# 在代码中均为函数内懒加载且有 ImportError 容错, 单元测试不触发:
+#   - YOLO 推理测试在无权重时 pytest.skip (权重 gitignore, CI 不存在)
+#   - GPU 状态探测 check_gpu_available() 无 torch 时返回 False
+#   - app.JsonFormatter / ui.safe_yield 模块级仅依赖标准库
+# 完整运行依赖见 requirements.txt。
+#
+# 平台注意: pyzbar 在 Linux 需系统包 libzbar0 (CI 已含 apt 步骤);
+#           Windows 的 pyzbar wheel 自带 zbar DLL, 无需额外配置。
+
+pytest>=8.0
+pyyaml>=6.0
+numpy>=1.24
+opencv-python-headless>=4.8
+pyzbar>=0.1.9

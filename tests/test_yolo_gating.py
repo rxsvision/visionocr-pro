@@ -84,6 +84,8 @@ def test_load_for_product_untrained_returns_false():
 
 
 def test_load_for_product_with_weights(tmp_path, monkeypatch):
+    # 真实加载权重需 ultralytics; 轻量环境 (CI) 无此包时一致 skip。
+    pytest.importorskip("ultralytics")
     if not _SMOKE_WEIGHTS.exists():
         pytest.skip("冒烟权重不存在")
     fake_dir = tmp_path / "yolo"

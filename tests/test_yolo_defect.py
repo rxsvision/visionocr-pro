@@ -13,6 +13,9 @@ _VAL_IMG_DIR = _ROOT / "finetune" / "data_pcb" / "images" / "val"
 
 @pytest.fixture(scope="module")
 def engine():
+    # 真实依赖是 ultralytics (懒加载); 轻量环境 (CI) 无此包时一致 skip,
+    # 不与「冒烟权重是否存在」混为一谈。
+    pytest.importorskip("ultralytics")
     if not _SMOKE_WEIGHTS.exists():
         pytest.skip("冒烟权重不存在, 跳过 (先运行 train_yolo.py 冒烟)")
     cfg = {"yolo_defect": {"weights": str(_SMOKE_WEIGHTS),
