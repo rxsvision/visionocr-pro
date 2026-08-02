@@ -135,6 +135,29 @@ class TestEdgeCases:
         with pytest.raises(ValueError):
             NPCalibrator(epsilon=-0.1)
 
+    def test_small_sample_warning(self, caplog):
+        """n<100 时应发出粒度警告 (不阻断拟合)。"""
+        import logging
+
+        rng = np.random.default_rng(5)
+        calib = NPCalibrator(epsilon=0.05)
+        with caplog.at_level(logging.WARNING, logger="visionocr.np_calib"):
+            assert calib.fit(_skewed_scores(rng, 48))
+        assert calib.is_fitted
+        assert any("NP校准样本偏少" in r.getMessage()
+                   for r in caplog.records)
+
+    def test_large_sample_no_warning(self, caplog):
+        """n>=100 时不应发出小样本警告。"""
+        import logging
+
+        rng = np.random.default_rng(6)
+        calib = NPCalibrator(epsilon=0.05)
+        with caplog.at_level(logging.WARNING, logger="visionocr.np_calib"):
+            assert calib.fit(_skewed_scores(rng, 150))
+        assert not any("NP校准样本偏少" in r.getMessage()
+                       for r in caplog.records)
+
 
 class TestPersistence:
     def test_roundtrip(self):

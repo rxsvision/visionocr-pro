@@ -13,7 +13,7 @@ import pytest
 
 from core import qc_dashboard
 from core.database import init_db
-from core.defect_detector import save_qc_result
+from core.defect_detector import persist_qc_image, save_qc_result
 
 try:
     from datasette.app import Datasette
@@ -154,3 +154,79 @@ def test_image_route_missing_file(seeded_db):
     ds = _make_app(seeded_db)
     resp = _run(ds, "/-/qc-img/4")  # 指向不存在文件那条
     assert resp.status_code == 404
+
+
+# ─── 图片持久化 (防 Gradio 临时路径失效) ────────────────────
+
+
+def test_persist_copies_with_hash_name(tmp_path):
+    src = tmp_path / "gradio_tmp" / "upload_x123.png"
+    src.parent.mkdir()
+    src.write_bytes(b"\x89PNG\r\n\x1a\nABC")
+    dest_dir = tmp_path / "data" / "qc_images"
+
+    out = persist_qc_image(str(src), dest_dir)
+
+    out_p = Path(out)
+    assert out_p.parent == dest_dir
+    assert out_p.is_file()
+    assert out_p.read_bytes() == src.read_bytes()
+    # 内容哈希命名: 16 位十六进制 + 小写扩展名
+    assert len(out_p.stem) == 16
+    assert all(c in "0123456789abcdef" for c in out_p.stem)
+    assert out_p.suffix == ".png"
+
+
+def test_persist_dedup_same_content(tmp_path):
+    dest_dir = tmp_path / "qc_images"
+    a = tmp_path / "a.png"
+    b = tmp_path / "other_name.png"  # 同内容不同名 (Gradio 临时名随机)
+    a.write_bytes(b"same-bytes")
+    b.write_bytes(b"same-bytes")
+
+    out_a = persist_qc_image(str(a), dest_dir)
+    out_b = persist_qc_image(str(b), dest_dir)
+
+    assert out_a == out_b
+    assert len(list(dest_dir.iterdir())) == 1  # 不产生冗余副本
+
+
+def test_persist_missing_file_passthrough(tmp_path):
+    ghost = str(tmp_path / "不存在.png")
+    assert persist_qc_image(ghost, tmp_path / "qc_images") == ghost
+
+
+def test_persist_already_in_dest_passthrough(tmp_path):
+    dest_dir = tmp_path / "qc_images"
+    dest_dir.mkdir()
+    img = dest_dir / "already.png"
+    img.write_bytes(b"x")
+    assert persist_qc_image(str(img), dest_dir) == str(img)
+    assert len(list(dest_dir.iterdir())) == 1  # 不再复制自己
+
+
+@needs_datasette
+def test_gradio_temp_cleanup_regression(tmp_path):
+    """原始 bug 复现: Gradio 临时文件在落库后被清理, 看板直链必须仍可用。"""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    db_path = init_db(data_dir)
+
+    # 模拟 Gradio 上传: 临时目录中的图片
+    tmp_upload = tmp_path / "gradio" / "tmpfile.png"
+    tmp_upload.parent.mkdir()
+    tmp_upload.write_bytes(b"\x89PNG\r\n\x1a\nPERSISTED-OK")
+
+    conn = sqlite3.connect(str(db_path))
+    stored = persist_qc_image(str(tmp_upload), data_dir / "qc_images")
+    rowid = save_qc_result(conn, stored, "NG", [{"label": "划痕"}], 0.9)
+    conn.close()
+    qc_dashboard.ensure_views(db_path)
+
+    # Gradio 清理临时文件 (bug 的触发条件)
+    tmp_upload.unlink()
+
+    ds = _make_app(Path(db_path))
+    resp = _run(ds, f"/-/qc-img/{rowid}")
+    assert resp.status_code == 200
+    assert b"PERSISTED-OK" in resp.content

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **质检图片持久化** (`persist_qc_image`): 检测结果落库前把图片复制到 `data/qc_images/`（内容 sha1 哈希命名，同图自动去重），看板图片直链不再因 Gradio 临时文件清理而 404；源文件缺失/复制失败时降级用原路径，不阻断检测
+- **NP 校准小样本守卫**: 校准样本 n<100 时发出粒度警告（阈值被单个次序统计量钉死，实际 FPR 调节步长 ≈1/n），提示为产品登记更多 OK 样本；不阻断拟合，有限样本保证仍成立
+- 测试 116 → 123：新增图片持久化 5 例（含 Gradio 临时清理端到端回归）与 NP 小样本警告 2 例
+
 ## [1.2.0] - 2026-08-03
 
 ### Added

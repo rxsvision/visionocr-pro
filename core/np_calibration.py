@@ -31,6 +31,7 @@ logger = logging.getLogger("visionocr.np_calib")
 
 _VERSION = 1
 _MIN_SAMPLES = 3  # 少于此数无法给出有意义的保证
+_SMALL_SAMPLE_N = 100  # 少于此数阈值粒度 (~1/n) 过粗, 需提醒补样本
 
 
 def _normal_cdf(z: float) -> float:
@@ -90,6 +91,17 @@ class NPCalibrator:
         rank = int(math.ceil((1.0 - self.epsilon) * (n + 1)))
         rank = min(max(rank, 1), n)
         self.threshold = float(arr_sorted[rank - 1])
+
+        # ── 小样本守卫: 保证仍成立, 但阈值粒度 ~1/n 过粗 ──
+        # n 小时阈值被单个次序统计量钉死, eps 的调节实际上以 1/n 为
+        # 步长跳变 (如 n=48 时只能取 ~2% 的整数倍), 单库实测误报率
+        # 可能明显偏离 eps。不阻断拟合, 仅提醒补充 OK 样本。
+        if n < _SMALL_SAMPLE_N:
+            logger.warning(
+                "NP校准样本偏少: n=%d (<%d), 阈值粒度约 %.1f%% "
+                "(一个次序统计量步长≈1/n), 单库实际误报率可能偏离 "
+                "eps=%.0f%%; 建议为该产品登记更多 OK 样本。",
+                n, _SMALL_SAMPLE_N, 100.0 / n, self.epsilon * 100.0)
 
         # ── 校准概率: log1p 域高斯拟合 ──
         log_s = np.log1p(arr)

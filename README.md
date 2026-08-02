@@ -74,7 +74,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 
 > **质检检测模式**（工程师模式三选一）：① 零样本 Grounding DINO（提示词驱动）｜② 少样本 PatchCore（OK 样本建库，可叠加 3D 深度融合）｜③ Union 零漏检（PatchCore + DINO + YOLO + DINOv2 四源 OR，任一 NG 即 NG；YOLO 按产品门控防跨域误报；DINOv2 与 PatchCore 特征互补降漏检；异常阈值 NP 校准，误报率统计可控）。漏检零容忍，误报由人工复核兜底。
 
-> **质检看板**（可选）：质检结果落库后可一键启动 Datasette 看板（日统计 + NG 明细 + 缺陷图回溯）：`pip install datasette` 后 `python scripts/qc_dashboard.py --port 8901`。
+> **质检看板**（可选）：质检结果落库后可一键启动 Datasette 看板（日统计 + NG 明细 + 缺陷图回溯）：`pip install datasette` 后 `python scripts/qc_dashboard.py --port 8901`。检测图入库前自动持久化到 `data/qc_images/`（内容哈希命名去重），Gradio 临时文件清理后看板图片链接不失效。
 
 ### 模型依赖
 
@@ -229,7 +229,7 @@ visionocr-pro/
 ├── dashboard/              # Datasette 插件 (质检看板图片路由)
 ├── scripts/                # 辅助脚本 (评估/诊断/看板)
 ├── scenarios/              # 场景配置
-├── tests/                  # pytest 单元测试 (116 tests)
+├── tests/                  # pytest 单元测试 (123 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 

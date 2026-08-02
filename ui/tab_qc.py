@@ -17,6 +17,7 @@ from core.config import load_config
 from core.database import get_conn
 from core.defect_detector import (
     DEFAULT_PROMPT, run_detection, run_union_detection, save_qc_result,
+    persist_qc_image,
     list_recipes, load_recipe, save_recipe, delete_recipe,
 )
 from core.anomaly_bank import (
@@ -360,9 +361,12 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
         # 落库
         try:
-            conn = get_conn(cfg.get("data_dir", "data"))
-            save_qc_result(conn, image_path, verdict, detections,
-                           max_score, f"[Union] {prompt}")
+            data_dir = cfg.get("data_dir", "data")
+            conn = get_conn(data_dir)
+            save_qc_result(
+                conn,
+                persist_qc_image(image_path, Path(data_dir) / "qc_images"),
+                verdict, detections, max_score, f"[Union] {prompt}")
             conn.close()
         except Exception:
             pass
@@ -436,9 +440,12 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
     # 落库
     try:
         cfg = _get_config()
-        conn = get_conn(cfg.get("data_dir", "data"))
-        save_qc_result(conn, image_path, verdict, result["detections"],
-                       max_score, prompt)
+        data_dir = cfg.get("data_dir", "data")
+        conn = get_conn(data_dir)
+        save_qc_result(
+            conn,
+            persist_qc_image(image_path, Path(data_dir) / "qc_images"),
+            verdict, result["detections"], max_score, prompt)
         conn.close()
     except Exception:
         pass
@@ -600,10 +607,14 @@ def _run_fusion_detect(registry, image_path, prompt, threshold,
     # 落库
     try:
         cfg = _get_config()
-        conn = get_conn(cfg.get("data_dir", "data"))
-        save_qc_result(conn, image_path, verdict, fused["fused_defects"],
-                       float(score_str) if score_str != "—" else 0.0,
-                       f"[3D融合] {prompt}")
+        data_dir = cfg.get("data_dir", "data")
+        conn = get_conn(data_dir)
+        save_qc_result(
+            conn,
+            persist_qc_image(image_path, Path(data_dir) / "qc_images"),
+            verdict, fused["fused_defects"],
+            float(score_str) if score_str != "—" else 0.0,
+            f"[3D融合] {prompt}")
         conn.close()
     except Exception:  # noqa: BLE001
         pass  # 落库失败不阻断检测
