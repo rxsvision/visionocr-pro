@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-03
+
+### Added
+
+- **NP 校准层** (`core/np_calibration.py`): split-conformal 异常阈值，正常件误报率统计可控（`np_epsilon` 配置）；npz 持久化，旧 bank 文件向后兼容（无校准器时回落 legacy P99×1.2）
+- **DINOv2 异常检测引擎** (`engines/vision/dinov2_anomaly.py`): ViT-S/14 (Apache-2.0) + PCA64 白化 + GMM 分布建模 + NP 校准，Union 零漏检第 4 源；与 PatchCore 特征互补降漏检（KolektorSDD holdout AUROC 0.9668，排序显著优于 PatchCore）；`data/banks_dinov2/` 独立建库，best-effort 不阻塞 PatchCore
+- **Phase 3 VLM 智能 ROI 裁切解释** (`core/roi_selector.py` + `core/vlm_explain.py`): Union NG 后 UI「AI 解释」按钮触发，热力图连通域 / 检测框 / 整图兜底三路径裁切候选区 → 本地 VLM 局部识读；实测同一缺陷图整图解释"无缺陷"而 ROI 裁切后正确回答"划痕"
+- **Phase 4 Datasette 质检看板** (`core/qc_dashboard.py` + `dashboard/qc_image_plugin.py` + `scripts/qc_dashboard.py`): 日统计 + NG 明细视图（含缺陷摘要与图片链接）、图片路由（200/404/413 分支），`pip install datasette` 后 `python scripts/qc_dashboard.py` 一键启动
+- **验收评估工具链** (`scripts/eval_acceptance.py` 等 6 脚本): kolektor/pcb/yolo/paired/bootstrap 五模式，argv 驱动零硬编码路径；真实图集验收结论 P1 AUROC 0.968 / P2 YOLO Recall 100% / P3 bootstrap 0.977
+- **OllamaEngine 部署友好性**: `OLLAMA_HOST` 环境变量支持（标准 Ollama 约定，可重定向备用实例）；大图下采样保护 `MAX_VLM_SIDE=1568`（15000×4096 线扫原样 base64 会产生 ~240MB 负载挂死服务）
+- 测试 75 → 116：新增 np_calibration / dinov2_anomaly / roi_selector / vlm_explain / ollama_provider / qc_dashboard 六个测试模块
+
+### Changed
+
+- **np_epsilon 出厂默认 0.02 → 0.10**（patchcore + dinov2）: 数据驱动对齐零漏检政策。KolektorSDD holdout 实测 Recall 38.5%→76.9% (PC) / 5.8%→67.3% (DV)，代价 FPR 4.3%→11.4% / 0%→2.9%；误报由人工复核兜底。零漏检实际保障链 = Union OR + 复核，非单阈值
+- **PatchCore 建库可复现性**: coreset 最远点采样起点固定种子（原全局未播种导致 bank 跨运行漂移，评估不可复现）
+- **Union 零漏检模式**扩为四源 OR（PatchCore + Grounding DINO + YOLO + DINOv2），配置段 `qc.union.enable_dinov2`
+- 质检结果落库（`save_qc_result`）供看板消费；README 同步技术栈/结构树/管线说明
+
+### Fixed
+
+- **PatchCore NP 校准自匹配偏差**: 校准集改为 20% held-out（校准图不再入 bank）——原实现建库集自评，校准分数被压低导致 NP 阈值偏小、FPR 膨胀；与 DINOv2 引擎策略一致
+- **datasette 中文 Windows 三处崩溃**: 插件加载用平台默认编码（插件文件改纯 ASCII）、CLI 读 metadata 用 cp936（启动注入 PYTHONUTF8=1）、表 metadata 字符串触发 500（结构化 dict + 回归断言）
+
 ## [1.1.0] - 2026-08-01
 
 ### Added

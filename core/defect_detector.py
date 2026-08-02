@@ -328,6 +328,8 @@ def run_anomaly_detection(registry, image_path: str,
         "anomaly_map": anomaly_map,
         "grid_size": result.get("grid_size", 0),
         "threshold_used": thresh_used,
+        "calibrated_score": result.get("calibrated_score"),
+        "np_p_value": result.get("np_p_value"),
     }
 
 
@@ -356,13 +358,15 @@ def run_union_detection(registry, image_path: str,
                         size_cfg: dict | None = None,
                         config: dict | None = None,
                         product_name: str = "") -> dict:
-    """三源 Union OR 检测: PatchCore + Grounding DINO + YOLO。
+    """四源 Union OR 检测: PatchCore + Grounding DINO + YOLO + DINOv2。
 
     零漏检架构:
     - PatchCore (表面异常): 划痕/凹陷/色差/污渍等, 基于正常样本记忆库
     - Grounding DINO (结构缺陷): 缺件/错位/标签歪等, 基于文本提示词
     - YOLO (结构缺陷): 缺孔/短路/毛刺等, 少样本微调; 受产品门控,
       仅当前产品有专属权重 (models/yolo/{product}.pt) 时激活, 防跨域误报
+    - DINOv2 (表面异常): 自监督 ViT 特征 + GMM 分布建模, 与 PatchCore
+      特征空间互补, 提升漏检覆盖; 需 OK 样本建库
     - Union OR: 任一模型判定 NG → 最终 NG (宁可误报, 不可漏检)
     - 误报由人工复核兜底 (产线标准流程)
 
@@ -373,12 +377,15 @@ def run_union_detection(registry, image_path: str,
         threshold: 异常分数阈值 (None=使用配置)
         size_cfg: 瑕疵尺寸过滤配置
         config: 全局配置字典 (读取 qc.union 段)
-        product_name: 当前产品名 (YOLO 门控用; 空/占位符=跳过 YOLO)
+        product_name: 当前产品名 (YOLO 门控 + PatchCore/DINOv2 特征库
+            自动加载用; 空/占位符=跳过 YOLO)
 
     Returns:
         {"image": np.ndarray, "verdict": "OK"/"NG",
-         "patchcore": {...} | None, "dino": {...} | None, "yolo": {...} | None,
-         "ng_sources": [...]}  ng_sources 可含 "patchcore"/"dino"/"yolo"
+         "patchcore": {...} | None, "dino": {...} | None,
+         "yolo": {...} | None, "dinov2": {...} | None,
+         "ng_sources": [...]}
+        ng_sources 可含 "patchcore"/"dino"/"yolo"/"dinov2"
     """
     import cv2
 
@@ -392,10 +399,12 @@ def run_union_detection(registry, image_path: str,
     enable_patchcore = union_cfg.get("enable_patchcore", True)
     enable_dino = union_cfg.get("enable_dino", True)
     enable_yolo = union_cfg.get("enable_yolo", True)
+    enable_dinov2 = union_cfg.get("enable_dinov2", True)
 
     pc_result = None
     dino_result = None
     yolo_result = None
+    dv_result = None
     ng_sources = []
 
     # ── 1) PatchCore 表面异常检测 ──
@@ -404,6 +413,10 @@ def run_union_detection(registry, image_path: str,
         if engine is not None:
             if not engine.is_ready():
                 registry.ensure_loaded("anomalib")
+            # 自动加载产品特征库 (持久化 bank 在 Union 模式下直接生效)
+            if engine.is_ready() and not engine.has_bank and product_name:
+                from core.anomaly_bank import load_product_bank
+                load_product_bank(registry, product_name)
             if engine.is_ready() and engine.has_bank:
                 kwargs = {}
                 if threshold is not None:
@@ -449,16 +462,52 @@ def run_union_detection(registry, image_path: str,
             logger.debug("Union: YOLO 跳过 (产品「%s」无专属权重)",
                          product_name or "<无>")
 
+    # ── 2c) DINOv2 表面异常检测 (与 PatchCore 特征互补) ──
+    if enable_dinov2:
+        dv_eng = registry.get("dinov2_anomaly")
+        if dv_eng is not None:
+            if not dv_eng.is_ready():
+                registry.ensure_loaded("dinov2_anomaly")
+            if dv_eng.is_ready() and not dv_eng.has_bank and product_name:
+                from core.anomaly_bank import load_product_bank_dinov2
+                load_product_bank_dinov2(registry, product_name)
+            if dv_eng.is_ready() and dv_eng.has_bank:
+                dv_kwargs = {}
+                if threshold is not None:
+                    dv_kwargs["threshold"] = threshold
+                dv_result = dv_eng.infer(image_path, **dv_kwargs)
+                if dv_result.get("error"):
+                    logger.warning("Union/DINOv2 错误: %s",
+                                   dv_result["error"])
+                    dv_result = None
+                elif dv_result.get("pred_label") == "NG":
+                    ng_sources.append("dinov2")
+            else:
+                logger.debug("Union: DINOv2 跳过 (未就绪或无特征库)")
+
     # ── 3) Union OR 判定 ──
     verdict = "NG" if ng_sources else "OK"
 
     # ── 4) 合成标注图 ──
     annotated = img.copy()
 
-    # 叠加热力图 (PatchCore)
+    # 叠加热力图 (PatchCore + DINOv2: 归一化后逐像素取max, 一次叠加)
+    # merged_map 同时暴露给下游 (VLM ROI 裁切定位)
+    h0, w0 = img.shape[:2]
+    merged_map = None
+    heat_maps = []
     if pc_result and pc_result.get("anomaly_map") is not None:
-        annotated = _overlay_heatmap(annotated, pc_result["anomaly_map"],
-                                     alpha=0.35)
+        heat_maps.append(pc_result["anomaly_map"])
+    if dv_result and dv_result.get("anomaly_map") is not None:
+        heat_maps.append(dv_result["anomaly_map"])
+    if len(heat_maps) == 1:
+        merged_map = cv2.resize(heat_maps[0].astype(np.float32), (w0, h0))
+        annotated = _overlay_heatmap(annotated, merged_map, alpha=0.35)
+    elif len(heat_maps) == 2:
+        merged_map = np.maximum(
+            cv2.resize(heat_maps[0].astype(np.float32), (w0, h0)),
+            cv2.resize(heat_maps[1].astype(np.float32), (w0, h0)))
+        annotated = _overlay_heatmap(annotated, merged_map, alpha=0.35)
 
     # 叠加检测框 (Grounding DINO)
     if dino_result and dino_result.get("detections"):
@@ -488,6 +537,10 @@ def run_union_detection(registry, image_path: str,
         "patchcore": None,
         "dino": None,
         "yolo": None,
+        "dinov2": None,
+        # 融合热力图 (全分辨率 float32, 无表面源时为 None) —
+        # 供 VLM ROI 裁切等下游定位使用
+        "anomaly_map": merged_map,
     }
 
     if pc_result:
@@ -495,6 +548,7 @@ def run_union_detection(registry, image_path: str,
             "score": pc_result.get("score", 0),
             "pred_label": pc_result.get("pred_label", "?"),
             "threshold_used": pc_result.get("threshold_used", 0),
+            "calibrated_score": pc_result.get("calibrated_score"),
         }
 
     if dino_result:
@@ -515,12 +569,21 @@ def run_union_detection(registry, image_path: str,
             "scores": yolo_result.get("scores", []),
         }
 
+    if dv_result:
+        result["dinov2"] = {
+            "score": dv_result.get("score", 0),
+            "pred_label": dv_result.get("pred_label", "?"),
+            "threshold_used": dv_result.get("threshold_used", 0),
+            "calibrated_score": dv_result.get("calibrated_score"),
+        }
+
     logger.info("Union 检测: verdict=%s, sources=%s, pc_score=%.4f, "
-                "dino_count=%d, yolo_count=%d",
+                "dino_count=%d, yolo_count=%d, dv_score=%.4f",
                 verdict, ng_sources,
                 pc_result.get("score", 0) if pc_result else -1,
                 dino_result.get("count", 0) if dino_result else -1,
-                yolo_result.get("count", 0) if yolo_result else -1)
+                yolo_result.get("count", 0) if yolo_result else -1,
+                dv_result.get("score", 0) if dv_result else -1)
 
     return result
 

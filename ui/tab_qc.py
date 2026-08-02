@@ -31,6 +31,10 @@ _config = None
 # 工人流程: 选"3D深度相机"采集 -> 深度帧存入此处 -> 检测时自动融合。
 _last_depth_frame = None
 
+# 缓存最近一次 Union 检测 (image_path + result), 供 "AI 缺陷解释" 按钮
+# 复用检测结果做 VLM ROI 裁切, 避免重复检测。
+_last_union = None
+
 
 def set_registry(registry) -> None:
     global _registry
@@ -155,6 +159,13 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                 label="检测明细 (编号对应图上标注)",
                 wrap=True,
             )
+            with gr.Accordion("🔍 AI 缺陷解释 (VLM 局部放大)", open=False):
+                explain_btn = gr.Button(
+                    "AI 解释 (裁剪可疑区域 → 本地 VLM 识读)",
+                    variant="secondary")
+                explain_gallery = gr.Gallery(
+                    label="候选区域 (自动裁切)", columns=3, height=180)
+                explain_md = gr.Markdown("")
             status_msg = gr.Markdown("")
             log_box = gr.Textbox(
                 label="运行日志 (进度 / 报错)",
@@ -169,6 +180,11 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                 fusion_enable, depth_threshold, fusion_mode_radio],
         outputs=[result_image, verdict_box, score_box, count_box,
                  detail_table, status_msg, log_box],
+    )
+    explain_btn.click(
+        fn=_explain_union,
+        inputs=[],
+        outputs=[explain_gallery, explain_md],
     )
     camera_btn.click(
         fn=_camera_capture,
@@ -217,6 +233,8 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
                 fusion_enable=False, depth_threshold=0.5, fusion_mode="OR (高召回, 推荐)"):
     """一键检测 (Generator): 流式输出进度日志 + 最终结果。"""
     import time as _time
+    global _last_union
+    _last_union = None  # 每次检测重置, 防止 AI 解释复用过期结果
     logs = []
 
     def log(msg):
@@ -272,9 +290,9 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
                table, status, log(f"✓ {verdict_str}"))
         return
 
-    # ─── Union 零漏检模式 (三源 OR: PatchCore + DINO + YOLO) ──
+    # ─── Union 零漏检模式 (四源 OR: PatchCore + DINO + YOLO + DINOv2) ──
     if "Union" in (mode or ""):
-        yield _EMPTY[:6] + (log("▶ Union 零漏检 (PatchCore+DINO+YOLO 任一NG即NG)..."),)
+        yield _EMPTY[:6] + (log("▶ Union 零漏检 (PatchCore+DINO+YOLO+DINOv2 任一NG即NG)..."),)
         cfg = _get_config()
         product = "" if pc_product in ("(新建)", None) else (pc_product or "")
         result = run_union_detection(
@@ -286,13 +304,19 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
                    f"⚠ {result['error']}", log(f"✗ {result['error']}"))
             return
 
+        # 缓存供 "AI 缺陷解释" 复用 (不重复检测)
+        _last_union = {"image_path": image_path, "result": result}
+
         verdict = result["verdict"]
         sources = result.get("ng_sources", [])
         pc = result.get("patchcore")
         dino = result.get("dino")
         yolo = result.get("yolo")
+        dv = result.get("dinov2")
 
         # 统一明细表 (对齐表头 #/缺陷类型/置信度/位置) + detections (落库用)
+        # 注: max_score 仅统计 dino/yolo (0~1概率语义); patchcore 距离分与
+        #     dinov2 NLL 分为无界量纲, 混入会破坏百分比显示
         table = []
         detections = []
         max_score = 0.0
@@ -301,9 +325,14 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
             row_no += 1
             table.append([str(row_no), "[PatchCore] 表面异常",
                           f"{pc.get('score', 0):.4f}", "热力图"])
-            max_score = max(max_score, float(pc.get("score", 0)))
             detections.append({"source": "patchcore", "label": "表面异常",
                                "score": pc.get("score", 0)})
+        if dv:
+            row_no += 1
+            table.append([str(row_no), "[DINOv2] 表面异常",
+                          f"{dv.get('score', 0):.4f}", "热力图"])
+            detections.append({"source": "dinov2", "label": "表面异常",
+                               "score": dv.get("score", 0)})
         if dino:
             for det in dino.get("detections", []):
                 box = det["box"]
@@ -338,7 +367,8 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         except Exception:
             pass
 
-        active = [s for s, r in (("PatchCore", pc), ("DINO", dino), ("YOLO", yolo))
+        active = [s for s, r in (("PatchCore", pc), ("DINO", dino),
+                                 ("YOLO", yolo), ("DINOv2", dv))
                   if r]
         status = (f"Union 零漏检 · 产品: {product or '默认'} · "
                   f"激活源: {'+'.join(active) or '无'}")
@@ -417,6 +447,28 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
     yield (result["image"], verdict_str, f"{max_score:.2%}",
            str(count), table, status,
            log(f"✓ {verdict_str} · 最高置信度 {max_score:.2%} · {count} 处"))
+
+
+def _explain_union():
+    """AI 缺陷解释: 复用最近一次 Union 结果, ROI 裁切 → 本地 VLM 识读。"""
+    if _last_union is None:
+        return [], "⚠ 请先运行一次 **Union 零漏检** 检测。"
+    if _registry is None:
+        return [], "⚠ 引擎未初始化。"
+
+    from core.vlm_explain import explain_union
+    try:
+        out = explain_union(_registry, _last_union["image_path"],
+                            _last_union["result"], _get_config())
+    except Exception as e:  # noqa: BLE001
+        return [], f"⚠ 解释过程异常: {e}"
+
+    if out.get("error"):
+        return out.get("crops", []), f"⚠ {out['error']}"
+    crops = out.get("crops", [])
+    summary = out.get("summary", "") or "(VLM 未返回内容)"
+    n = len(out.get("rois", []))
+    return crops, f"**已分析 {n} 个候选区域**\n\n{summary}"
 
 
 def _camera_capture(image_source):
@@ -626,4 +678,10 @@ def _register_bank(pc_product, pc_product_name, files):
            f"- OK 样本: {result.get('n_images', 0)} 张\n"
            f"- 特征库大小: {result.get('bank_size', 0)} patches\n"
            f"- 保存位置: {result.get('saved_to', '')}")
+    if result.get("dinov2"):
+        msg += (f"\n- DINOv2 特征库: {result['dinov2'].get('n_etalons', 0)} "
+                f"个原型 (Union 第4源)\n"
+                f"  保存位置: {result.get('dinov2_saved_to', '')}")
+    elif result.get("dinov2_error"):
+        msg += f"\n- DINOv2 特征库: 建立失败 ({result['dinov2_error']}), 不影响 PatchCore"
     return msg, gr.update(choices=banks, value=product)

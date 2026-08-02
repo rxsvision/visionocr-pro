@@ -32,12 +32,25 @@ class OllamaEngine(BaseEngine):
         )
 
     # ─── 生命周期 ────────────────────────────────────────────
+    @staticmethod
+    def _resolve_host(llm_cfg: dict) -> str:
+        """解析 Ollama 服务地址。
+
+        OLLAMA_HOST 环境变量为标准 Ollama 约定, 优先于配置文件
+        (部署/测试可重定向到备用实例, 无需改 config.yaml)。
+        """
+        host = os.environ.get("OLLAMA_HOST", "").strip() or llm_cfg.get(
+            "host", "http://localhost:11434")
+        if not host.startswith(("http://", "https://")):
+            host = "http://" + host
+        return host.rstrip("/")
+
     def load(self) -> None:
         import requests
 
         self.state = EngineState.LOADING
         llm_cfg = (self.config or {}).get("llm", {}).get("ollama", {})
-        self._host = llm_cfg.get("host", "http://localhost:11434").rstrip("/")
+        self._host = self._resolve_host(llm_cfg)
         self._model_name = llm_cfg.get("model", "qwen3-vl:8b")
         self._timeout = float(llm_cfg.get("timeout", 600))
 
@@ -88,8 +101,9 @@ class OllamaEngine(BaseEngine):
         message: dict[str, Any] = {"role": "user", "content": prompt or "请描述图片内容。"}
         if image_path and os.path.isfile(image_path):
             try:
-                with open(image_path, "rb") as f:
-                    message["images"] = [base64.b64encode(f.read()).decode("ascii")]
+                message["images"] = [
+                    base64.b64encode(self._prepare_image_bytes(image_path))
+                    .decode("ascii")]
             except Exception as e:  # noqa: BLE001
                 return {"text": "", "confidence": 0.0, "engine": "ollama_vlm",
                         "error": f"图片读取失败: {e}"}
@@ -131,6 +145,42 @@ class OllamaEngine(BaseEngine):
         except Exception as e:  # noqa: BLE001
             logger.error("[Ollama] chat 失败: %s", e)
             return ""
+
+    # VLM 输入边长上限: 线扫图可达 15000x4096 (~180MB BMP), 原样 base64
+    # 会产生 ~240MB 负载导致服务挂起; qwen3-vl 内部也会缩放, 预先降到该
+    # 上限既保细节又控负载。
+    MAX_VLM_SIDE = 1568
+
+    def _prepare_image_bytes(self, image_path: str) -> bytes:
+        """读取并按需下采样图片, 返回可 base64 编码的字节。"""
+        import numpy as np
+
+        with open(image_path, "rb") as f:
+            raw = f.read()
+        try:
+            import cv2
+
+            img = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8),
+                               cv2.IMREAD_COLOR)
+            if img is None:
+                return raw  # 无法解码 → 原样交给服务端
+            h, w = img.shape[:2]
+            long_side = max(h, w)
+            if long_side <= self.MAX_VLM_SIDE:
+                return raw
+            scale = self.MAX_VLM_SIDE / float(long_side)
+            img = cv2.resize(img, (max(1, int(w * scale)),
+                                   max(1, int(h * scale))),
+                             interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", img,
+                                   [cv2.IMWRITE_JPEG_QUALITY, 92])
+            if not ok:
+                return raw
+            logger.info("[Ollama] 大图下采样 %dx%d -> %dx%d",
+                        w, h, img.shape[1], img.shape[0])
+            return buf.tobytes()
+        except Exception:  # noqa: BLE001 解码/缩放失败不应阻断推理
+            return raw
 
     @staticmethod
     def _extract_answer(msg: dict) -> str:

@@ -45,6 +45,7 @@ class AnomalibEngine(BaseEngine):
         self._bank_tensor = None  # GPU缓存的记忆库tensor
         self._calibrated_threshold: Optional[float] = None  # 自适应阈值 (train后校准)
         self._train_scores: list[float] = []  # 训练集推理分数 (用于阈值校准)
+        self._np_calibrator = None  # NP校准器 (FPR统计可控, train后拟合)
 
         # 从配置读取生产级参数
         qc_cfg = config.get("qc", {}) or {}
@@ -52,6 +53,7 @@ class AnomalibEngine(BaseEngine):
         self._img_size: int = pc_cfg.get("input_size", _DEFAULT_IMG_SIZE)
         self._coreset_ratio: float = pc_cfg.get("coreset_ratio", 0.1)
         self._conservative: bool = pc_cfg.get("conservative_mode", True)
+        self._np_epsilon: float = float(pc_cfg.get("np_epsilon", 0.02))
 
     @property
     def meta(self) -> EngineMeta:
@@ -114,8 +116,20 @@ class AnomalibEngine(BaseEngine):
 
         ratio = coreset_ratio if coreset_ratio > 0 else self._coreset_ratio
 
+        # ─── 校准集划分 (必须在建库前, 校准图不得进入bank) ─────
+        # 留出20%作为校准集: 校准图到bank的距离代表"未见正常样本"
+        # 的真实分布; 若校准图同时入bank, self-match偏差会压低校准分数,
+        # 导致NP阈值偏小、FPR膨胀 (与 dinov2 引擎保持一致的策略)。
+        n_total = len(image_paths)
+        if n_total >= 10:
+            n_cal = max(3, n_total // 5)  # 20%, 至少3张
+            bank_paths = image_paths[:-n_cal]
+            cal_paths = image_paths[-n_cal:]  # 取最后N张 (train已shuffle)
+        else:
+            bank_paths = cal_paths = list(image_paths)  # 样本太少, 全部复用
+
         all_features = []
-        for path in image_paths:
+        for path in bank_paths:
             feat = self._extract_features(path)
             if feat is not None:
                 # 裁切到有效区域 (排除letterbox填充, 避免假特征污染bank)
@@ -132,7 +146,9 @@ class AnomalibEngine(BaseEngine):
         _MAX_CORESET_INPUT = 25000
         if bank.shape[0] > _MAX_CORESET_INPUT:
             n_orig = bank.shape[0]
-            idx = np.random.choice(n_orig, _MAX_CORESET_INPUT, replace=False)
+            # 固定种子: 保证同数据多次建库结果一致 (评估可复现)
+            idx = np.random.default_rng(2026).choice(
+                n_orig, _MAX_CORESET_INPUT, replace=False)
             bank = bank[idx]
             logger.info("预采样: %d → %d patches", n_orig, _MAX_CORESET_INPUT)
 
@@ -153,16 +169,7 @@ class AnomalibEngine(BaseEngine):
         # 预缓存GPU tensor加速推理
         self._cache_bank_tensor()
 
-        # ─── 自适应阈值校准 (held-out, 避免self-match偏差) ─────
-        # 从训练集中留出20%作为校准集 (不参与建库)
-        # 校准集到bank的距离代表"未见正常样本"的真实分布
-        n_total = len(image_paths)
-        if n_total >= 10:
-            n_cal = max(3, n_total // 5)  # 20%, 至少3张
-            cal_paths = image_paths[-n_cal:]  # 取最后N张 (train已shuffle)
-        else:
-            cal_paths = image_paths  # 样本太少, 全部复用
-
+        # ─── 自适应阈值校准 (held-out, cal_paths 已在建库前划出) ─────
         cal_scores = []
         for path in cal_paths:
             feat = self._extract_features(path)
@@ -175,14 +182,28 @@ class AnomalibEngine(BaseEngine):
             cal_scores.append(s)
 
         if cal_scores:
-            p99 = float(np.percentile(cal_scores, 99))
-            # 保守模式: P99 × 1.2 (阈值略高于正常上限, 宁可误报不漏检)
-            # 标准模式: P99 × 1.0
-            margin = 1.2 if self._conservative else 1.0
-            self._calibrated_threshold = p99 * margin
-            self._train_scores = cal_scores
-            logger.info("阈值校准: P99=%.4f, calibrated=%.4f (conservative=%s, n_cal=%d)",
-                        p99, self._calibrated_threshold, self._conservative, len(cal_scores))
+            # 首选: NP 校准 (FPR 统计可控, 有限样本保证)
+            from core.np_calibration import NPCalibrator
+            calib = NPCalibrator(epsilon=self._np_epsilon)
+            if calib.fit(cal_scores):
+                self._np_calibrator = calib
+                self._calibrated_threshold = calib.threshold
+                self._train_scores = cal_scores
+                logger.info("NP阈值校准: eps=%.3f, tau=%.4f, n_cal=%d",
+                            self._np_epsilon, self._calibrated_threshold,
+                            len(cal_scores))
+            else:
+                # 降级: NP拟合失败 (样本过少) → 沿用 P99×margin 启发式
+                p99 = float(np.percentile(cal_scores, 99))
+                # 保守模式: P99 × 1.2 (阈值略高于正常上限, 宁可误报不漏检)
+                # 标准模式: P99 × 1.0
+                margin = 1.2 if self._conservative else 1.0
+                self._calibrated_threshold = p99 * margin
+                self._train_scores = cal_scores
+                logger.info("阈值校准(legacy): P99=%.4f, calibrated=%.4f "
+                            "(conservative=%s, n_cal=%d)",
+                            p99, self._calibrated_threshold,
+                            self._conservative, len(cal_scores))
         else:
             self._calibrated_threshold = None
 
@@ -257,13 +278,20 @@ class AnomalibEngine(BaseEngine):
 
         pred = "NG" if score > threshold else "OK"
 
-        return {
+        result = {
             "score": round(score, 4),
             "anomaly_map": anomaly_map,
             "pred_label": pred,
             "grid_size": grid_size,
             "threshold_used": round(threshold, 4),
         }
+        # NP 校准输出 (有校准器时附加, 向后兼容)
+        if self._np_calibrator is not None and self._np_calibrator.is_fitted:
+            result["calibrated_score"] = round(
+                self._np_calibrator.anomaly_confidence(score), 4)
+            result["np_p_value"] = round(
+                self._np_calibrator.survival(score), 6)
+        return result
 
     def save_bank(self, path: str | Path, product_name: str = "") -> None:
         """保存记忆库到 .npz 文件。"""
@@ -278,6 +306,10 @@ class AnomalibEngine(BaseEngine):
         }
         if self._calibrated_threshold is not None:
             save_kwargs["calibrated_threshold"] = self._calibrated_threshold
+        if self._np_calibrator is not None and self._np_calibrator.is_fitted:
+            import json
+            save_kwargs["np_calib_json"] = json.dumps(
+                self._np_calibrator.to_dict(), ensure_ascii=False)
         np.savez_compressed(str(path), **save_kwargs)
         logger.info("记忆库已保存: %s (%d patches, threshold=%s)",
                     path, self._memory_bank.shape[0],
@@ -301,6 +333,16 @@ class AnomalibEngine(BaseEngine):
                 self._calibrated_threshold = float(data["calibrated_threshold"])
             else:
                 self._calibrated_threshold = None
+            # 恢复NP校准器 (兼容旧bank文件: 无此字段时为None)
+            self._np_calibrator = None
+            if "np_calib_json" in data.files:
+                import json
+                from core.np_calibration import NPCalibrator
+                try:
+                    self._np_calibrator = NPCalibrator.from_dict(
+                        json.loads(str(data["np_calib_json"])))
+                except Exception as e:
+                    logger.warning("NP校准器解析失败, 忽略: %s", e)
             self._cache_bank_tensor()
             logger.info("记忆库已加载: %s (%d patches, threshold=%s)",
                         path.name, self._memory_bank.shape[0],
@@ -321,6 +363,7 @@ class AnomalibEngine(BaseEngine):
         self._bank_tensor = None
         self._calibrated_threshold = None
         self._train_scores = []
+        self._np_calibrator = None
         self.state = EngineState.UNLOADED
         try:
             import torch
@@ -543,7 +586,8 @@ class AnomalibEngine(BaseEngine):
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
             feat_t = torch.from_numpy(features).float().to(device)
-            selected = [np.random.randint(n)]
+            # 固定种子起点: 建库可复现 (评估一致性)
+            selected = [int(np.random.default_rng(2026).integers(n))]
             min_dists = torch.full((n,), float("inf"), device=device)
 
             for _ in range(n_select - 1):
@@ -555,7 +599,7 @@ class AnomalibEngine(BaseEngine):
             return features[selected]
         except Exception:
             # CPU fallback
-            selected = [np.random.randint(n)]
+            selected = [int(np.random.default_rng(2026).integers(n))]
             min_dists = np.full(n, np.inf)
             for _ in range(n_select - 1):
                 last = features[selected[-1]]

@@ -29,7 +29,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 | 推理框架 | PyTorch 2.x + CUDA 12.6 | GPU 加速，FP16 推理 |
 | OCR 引擎 | RapidOCR / PaddleOCR-VL / OvisOCR2 / HunyuanOCR / MinerU | 多引擎 LRU 显存管理 |
 | LLM | Ollama (qwen3-vl:8b) + 云端 API (DeepSeek) | 分级路由 |
-| 视觉检测 | Grounding DINO + PatchCore + YOLO | 零样本/少样本/Union 零漏检三源 OR |
+| 视觉检测 | Grounding DINO + PatchCore + YOLO + DINOv2 | 零样本/少样本/Union 零漏检四源 OR |
 | 条码识别 | pyzbar (ZBar) | OCR Tab 自动并行检测 |
 | 3D 融合 | Sizector 结构光 + pythonnet | 深度图 + RGB 融合检测 |
 | 数据存储 | SQLite (WAL) | 合同、应收、审计日志 |
@@ -65,12 +65,16 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 │  采集图像 (海康/Sizector) → 2D 检测 (Grounding DINO 零样本)      │
 │         → 3D 深度融合 (OR/AND/depth_only 策略)                   │
 │         → PatchCore 少样本异常检测 → IoU 重合提升置信度          │
-│         → OK/NG 判定 + 标注图输出                                │
+│         → Union 零漏检 (四源 OR: PC+DINO+YOLO+DINOv2)            │
+│         → NG 后 AI 解释 (智能 ROI 裁切 → 本地 VLM 局部识读)      │
+│         → OK/NG 判定 + 标注图输出 + 结果落库                     │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **质检检测模式**（工程师模式三选一）：① 零样本 Grounding DINO（提示词驱动）｜② 少样本 PatchCore（OK 样本建库，可叠加 3D 深度融合）｜③ Union 零漏检（PatchCore + DINO + YOLO 三源 OR，任一 NG 即 NG；YOLO 按产品门控防跨域误报）。漏检零容忍，误报由人工复核兜底。
+> **质检检测模式**（工程师模式三选一）：① 零样本 Grounding DINO（提示词驱动）｜② 少样本 PatchCore（OK 样本建库，可叠加 3D 深度融合）｜③ Union 零漏检（PatchCore + DINO + YOLO + DINOv2 四源 OR，任一 NG 即 NG；YOLO 按产品门控防跨域误报；DINOv2 与 PatchCore 特征互补降漏检；异常阈值 NP 校准，误报率统计可控）。漏检零容忍，误报由人工复核兜底。
+
+> **质检看板**（可选）：质检结果落库后可一键启动 Datasette 看板（日统计 + NG 明细 + 缺陷图回溯）：`pip install datasette` 后 `python scripts/qc_dashboard.py --port 8901`。
 
 ### 模型依赖
 
@@ -84,6 +88,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 | PaddleOCR-VL | 自然场景 OCR | ~4 GB | ~800 MB | pip 自动下载 (paddleocr) |
 | Grounding DINO (tiny) | 零样本缺陷检测 | ~2.5 GB | 1.2 GB | transformers 自动缓存 |
 | PatchCore (WideResNet50) | 少样本异常检测 | ~1.5 GB | ~100 MB | 代码内置 (ImageNet 预训练) |
+| DINOv2-S/14 | 少样本异常检测 (Union 第4源) | ~1 GB | 85 MB | transformers 自动缓存 (Apache-2.0) |
 | HunyuanOCR | 手写体 OCR (需 24GB+) | ~12 GB | ~12 GB | `python scripts/download_models.py hunyuan` |
 
 > **硬件建议**: RTX 4070 Ti (12 GB) 可运行除 HunyuanOCR 外的所有引擎。HunyuanOCR 需要 24 GB+ 显存 (RTX 4090 / A5000)。
@@ -132,6 +137,7 @@ run.bat            # Windows
 | Grounding DINO | 892 MB | `~/.cache/huggingface/` | transformers 自动 |
 | RapidOCR | ~50 MB | pip 包内嵌 | `pip install` 自带 |
 | PatchCore | ~100 MB | 代码内置 | torchvision 首次下载 |
+| DINOv2-S/14 | 85 MB | `~/.cache/huggingface/` | transformers 自动 |
 
 #### 配置
 
@@ -143,6 +149,8 @@ run.bat            # Windows
 - `camera.type` — 相机类型 (hikvision / opencv / gigevision)
 - `ocr.confidence_threshold` — OCR 置信度拦截阈值（默认 0.75）
 - `ocr.scene_classifier.confidence_threshold` — 场景分类器旁路阈值（默认 0.7）
+- `qc.patchcore.np_epsilon` / `qc.dinov2.np_epsilon` — NP 校准目标误报率（默认 0.10，零漏检取向：Recall 优先，误报人工复核兜底；调小更保守、调大召回更高）
+- `qc.vlm_explain` — AI 解释开关与 ROI 参数（max_rois / pad_frac / rel_thresh 等）
 
 #### 微调 (Fine-tune)
 
@@ -189,8 +197,12 @@ visionocr-pro/
 │   ├── perspective_correct.py # 透视纠偏
 │   ├── postprocess.py      #   OCR 后处理纠错
 │   ├── depth_fusion.py     #   3D 深度融合
-│   ├── defect_detector.py  #   缺陷检测调度 (DINO/PatchCore/Union)
-│   ├── anomaly_bank.py     #   PatchCore 特征库 (按产品隔离)
+│   ├── defect_detector.py  #   缺陷检测调度 (DINO/PatchCore/DINOv2/Union)
+│   ├── anomaly_bank.py     #   PatchCore/DINOv2 特征库 (按产品隔离)
+│   ├── np_calibration.py   #   NP 校准 (异常阈值误报率统计可控)
+│   ├── roi_selector.py     #   智能 ROI 裁切 (热力图/检测框/整图兜底)
+│   ├── vlm_explain.py      #   VLM 局部识读 (ROI → 缺陷描述)
+│   ├── qc_dashboard.py     #   Datasette 看板构建 (视图/metadata/启动)
 │   ├── yolo_products.py    #   YOLO 权重产品门控 (防跨域误报)
 │   ├── camera.py           #   海康相机封装
 │   ├── sizector_camera.py  #   Sizector 3D 相机
@@ -214,9 +226,10 @@ visionocr-pro/
 │   ├── tab_behavior.py     #   行为分析 Tab (P2)
 │   └── tab_settings.py     #   设置 + 引擎健康面板
 ├── finetune/               # 微调工具链 (PP-OCRv6 + YOLO 缺陷检测)
-├── scripts/                # 辅助脚本
+├── dashboard/              # Datasette 插件 (质检看板图片路由)
+├── scripts/                # 辅助脚本 (评估/诊断/看板)
 ├── scenarios/              # 场景配置
-├── tests/                  # pytest 单元测试 (45 tests)
+├── tests/                  # pytest 单元测试 (116 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 
@@ -263,7 +276,7 @@ Key advantages:
 | Inference | PyTorch 2.x + CUDA 12.6 | GPU-accelerated, FP16 |
 | OCR Engines | RapidOCR / PaddleOCR-VL / OvisOCR2 / HunyuanOCR / MinerU | LRU VRAM management |
 | LLM | Ollama (qwen3-vl:8b) + Cloud API (DeepSeek) | Tiered routing |
-| Vision | Grounding DINO + PatchCore + YOLO | Zero-shot / few-shot / Union zero-miss (3-source OR) |
+| Vision | Grounding DINO + PatchCore + YOLO + DINOv2 | Zero-shot / few-shot / Union zero-miss (4-source OR) |
 | Barcode | pyzbar (ZBar) | Auto parallel detection in OCR tab |
 | 3D Fusion | Sizector structured light + pythonnet | Depth + RGB fusion |
 | Storage | SQLite (WAL) | Contracts, receivables, audit logs |
@@ -282,6 +295,7 @@ Model weights are distributed across runtime-managed locations (not bundled in t
 | PaddleOCR-VL | Natural scene OCR | ~4 GB | ~800 MB | Auto via pip (paddleocr) |
 | Grounding DINO (tiny) | Zero-shot defect detection | ~2.5 GB | 1.2 GB | Auto via transformers cache |
 | PatchCore (WideResNet50) | Few-shot anomaly detection | ~1.5 GB | ~100 MB | Built-in (ImageNet pretrained) |
+| DINOv2-S/14 | Few-shot anomaly detection (Union 4th source) | ~1 GB | 85 MB | Auto via transformers cache (Apache-2.0) |
 | HunyuanOCR | Handwriting OCR (requires 24 GB+) | ~12 GB | ~12 GB | `python scripts/download_models.py hunyuan` |
 
 > **Hardware**: RTX 4070 Ti (12 GB) runs all engines except HunyuanOCR, which requires 24 GB+ VRAM (RTX 4090 / A5000).
@@ -319,6 +333,7 @@ run.bat            # Windows
 | Grounding DINO | 892 MB | `~/.cache/huggingface/` | transformers auto |
 | RapidOCR | ~50 MB | pip package | `pip install` |
 | PatchCore | ~100 MB | Built-in | torchvision first-run |
+| DINOv2-S/14 | 85 MB | `~/.cache/huggingface/` | transformers auto |
 
 > **Windows note**: Do NOT install paddlepaddle-gpu (cudnn DLL conflict). RapidOCR covers all OCR needs. For PaddleOCR-VL, see [Docker option](DEPLOY.md#6-docker-option-paddleocr-on-windows).
 

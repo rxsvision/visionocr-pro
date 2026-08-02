@@ -15,6 +15,7 @@ from pathlib import Path
 logger = logging.getLogger("visionocr.anomaly_bank")
 
 _BANKS_DIR = Path("data/banks")
+_BANKS_DV_DIR = Path("data/banks_dinov2")  # DINOv2 库独立目录 (与 PatchCore 隔离)
 
 
 def list_banks() -> list[str]:
@@ -27,6 +28,11 @@ def list_banks() -> list[str]:
 def bank_path(product_name: str) -> Path:
     """获取产品特征库文件路径。"""
     return _BANKS_DIR / f"{product_name}.npz"
+
+
+def bank_path_dinov2(product_name: str) -> Path:
+    """获取产品 DINOv2 特征库文件路径。"""
+    return _BANKS_DV_DIR / f"{product_name}.npz"
 
 
 def bank_exists(product_name: str) -> bool:
@@ -77,6 +83,30 @@ def register_ok_samples(registry, product_name: str,
     engine.save_bank(bank_path(product_name), product_name=product_name)
     result["product_name"] = product_name
     result["saved_to"] = str(bank_path(product_name))
+
+    # DINOv2 双建库 (Union 第4源, best-effort: 失败不阻塞 PatchCore)
+    dv_eng = registry.get("dinov2_anomaly")
+    if dv_eng is not None:
+        try:
+            if not dv_eng.is_ready():
+                registry.ensure_loaded("dinov2_anomaly")
+            if dv_eng.is_ready():
+                dv_meta = dv_eng.train(image_paths)
+                if dv_meta.get("error"):
+                    result["dinov2_error"] = dv_meta["error"]
+                    logger.warning("DINOv2 建库失败: %s", dv_meta["error"])
+                else:
+                    _BANKS_DV_DIR.mkdir(parents=True, exist_ok=True)
+                    dv_eng.save_bank(bank_path_dinov2(product_name),
+                                     product_name=product_name)
+                    result["dinov2"] = dv_meta
+                    result["dinov2_saved_to"] = str(
+                        bank_path_dinov2(product_name))
+            else:
+                result["dinov2_error"] = "DINOv2 模型加载失败 (不影响PatchCore)"
+        except Exception as e:
+            result["dinov2_error"] = str(e)
+            logger.warning("DINOv2 建库异常 (不影响PatchCore): %s", e)
     return result
 
 
@@ -90,6 +120,18 @@ def load_product_bank(registry, product_name: str) -> bool:
     if not engine.is_ready():
         return False
     return engine.load_bank(bank_path(product_name))
+
+
+def load_product_bank_dinov2(registry, product_name: str) -> bool:
+    """加载指定产品的 DINOv2 特征库到引擎。"""
+    engine = registry.get("dinov2_anomaly")
+    if engine is None:
+        return False
+    if not engine.is_ready():
+        registry.ensure_loaded("dinov2_anomaly")
+    if not engine.is_ready():
+        return False
+    return engine.load_bank(bank_path_dinov2(product_name))
 
 
 def run_anomaly_detection(registry, image_path: str,

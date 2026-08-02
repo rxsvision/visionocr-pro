@@ -167,11 +167,21 @@ qc:
     input_size: 512               # 输入分辨率 (512保微小缺陷, 256省显存)
     coreset_ratio: 0.1            # 记忆库压缩比 (0.1=10%, 越小越快精度略降)
     conservative_mode: true       # 保守阈值: 阈值×0.5, 最大化召回 (宁可误报不漏检)
+    np_epsilon: 0.10              # NP校准目标误报率: 零漏检取向(Recall优先, 误报人工复核兜底)
+                                  # 实测(KolektorSDD holdout): 0.02→Recall38.5%/FPR4.3% | 0.10→Recall76.9%/FPR11.4%
+  # DINOv2 异常检测 (Union 第4源: 与 PatchCore 特征互补, 降低漏检)
+  dinov2:
+    model_id: "facebook/dinov2-small"  # Apache-2.0, HF缓存离线可用
+    input_size: 518               # 输入分辨率 (14的倍数, 518=DINOv2标准)
+    pca_dim: 64                   # PCA白化降维维度 (GMM稳定性)
+    n_etalons: 8                  # GMM分量数 (正常模式原型数)
+    np_epsilon: 0.10              # NP校准目标误报率 (与patchcore一致): 0.02→Recall5.8%/FPR0% | 0.10→Recall67.3%/FPR2.9%
   # 双模型 Union OR (零漏检架构: 任一NG→最终NG, 误报人工复核兜底)
   union:
     enable_patchcore: true        # 表面异常: 划痕/凹陷/色差 (需OK样本建库)
     enable_dino: true             # 结构缺陷: 缺件/错位/标签歪 (需提示词)
     enable_yolo: true             # 结构缺陷: 缺孔/短路/毛刺 (少样本微调, 需训练权重)
+    enable_dinov2: true           # 表面异常: DINOv2特征+GMM分布建模 (与PatchCore互补, 需OK样本建库)
   # 瑕疵尺寸过滤 (产线刚需: 过滤灰尘噪点 + 排除背景误检)
   defect_size:
     enabled: true
@@ -181,6 +191,18 @@ qc:
     max_area_mm2: 0.0           # 最大面积 (毫米²), 0=不启用
     pixels_per_mm: 0.0          # 相机标定系数 (像素/毫米), 0=未标定仅用像素
     mode: "bbox"                # bbox (检测框面积) | contour (精确轮廓面积)
+  # VLM 缺陷解释 (Phase 3: 智能 ROI 裁切 → 本地 VLM 局部识读)
+  # Union NG 后由 UI "AI 解释" 按钮触发; 整图解释慢且失焦, 裁切候选区
+  # 后 token 消耗与延迟显著下降, 描述更聚焦。
+  vlm_explain:
+    enabled: true
+    max_rois: 3                 # 最多解释的候选区域数
+    min_area_frac: 0.0005       # 连通域最小面积占全图比例 (滤噪点)
+    pad_frac: 0.25              # ROI 外扩比例 (给 VLM 留上下文)
+    rel_thresh: 0.45            # 热力图相对阈值 (相对自身峰值)
+    max_tokens: 512             # 每区域回答 token 上限 (短答约束)
+    no_think: true              # qwen3-vl 跳过思考链 (省时延省token)
+    prompt: ""                  # 自定义提示词 (空=内置工业质检提示词)
 
 # YOLO 结构缺陷检测引擎 (少样本微调)
 yolo_defect:
