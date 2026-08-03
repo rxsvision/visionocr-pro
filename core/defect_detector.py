@@ -66,10 +66,17 @@ def _safe_name(name: str) -> str:
 
 
 def _recipe_path(name: str) -> Path:
-    """构造并校验配方路径不越界。"""
+    """构造并校验配方路径: 优先清洗名, 旧文件用原始名回退兼容 (均不越界)。"""
+    root = _RECIPES_DIR.resolve()
     p = (_RECIPES_DIR / f"{_safe_name(name)}.json").resolve()
-    if not p.is_relative_to(_RECIPES_DIR.resolve()):
+    if not p.is_relative_to(root):
         raise ValueError(f"路径越界: {name} 非法")
+    if p.exists():
+        return p
+    # 回退兼容 v1.4.1 前已存在的旧文件 (名称含 . 等特殊字符)
+    legacy = (_RECIPES_DIR / f"{str(name).strip()}.json").resolve()
+    if legacy.is_relative_to(root) and legacy.exists():
+        return legacy
     return p
 
 
@@ -120,9 +127,9 @@ def save_recipe(name: str, prompt: str, threshold: float = 0.3,
                 pixels_per_mm: float = 0.0) -> None:
     """保存产品配方 (含瑕疵尺寸阈值)。"""
     _RECIPES_DIR.mkdir(parents=True, exist_ok=True)
-    safe = _safe_name(name)
+    p = _recipe_path(name)
     data = {
-        "name": safe,
+        "name": p.stem,
         "prompt": prompt,
         "threshold": threshold,
         "note": note,
@@ -132,7 +139,6 @@ def save_recipe(name: str, prompt: str, threshold: float = 0.3,
             "pixels_per_mm": pixels_per_mm,
         },
     }
-    p = _recipe_path(safe)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

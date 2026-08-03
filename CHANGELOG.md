@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 路径清洗回退兼容: 旧产品配方/特征库文件名 (含 `.` 等特殊字符) 仍可读取/覆写, 新增 `tests/test_path_safety.py` 17 项用例
+
 ## [1.4.1] - 2026-08-04
 
 ### Fixed

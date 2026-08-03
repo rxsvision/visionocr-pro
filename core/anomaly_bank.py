@@ -34,6 +34,21 @@ def _validate_path(path: Path, root: Path) -> Path:
     return resolved
 
 
+def _resolve_bank_path(name: str, root: Path, ext: str = ".npz") -> Path:
+    """解析特征库路径: 优先清洗名, 旧文件用原始名回退兼容 (均校验不越界)。"""
+    p = _validate_path(root / f"{_safe_name(name)}{ext}", root)
+    if p.exists():
+        return p
+    # 回退兼容 v1.4.1 前已存在的旧文件 (名称含 . 等特殊字符)
+    try:
+        legacy = _validate_path(root / f"{name.strip()}{ext}", root)
+        if legacy.exists():
+            return legacy
+    except ValueError:
+        pass  # 原始名越界 (路径穿越尝试), 忽略回退
+    return p
+
+
 def list_banks() -> list[str]:
     """列出所有已建库的产品名。"""
     if not _BANKS_DIR.exists():
@@ -50,18 +65,12 @@ def list_banks_dinov2() -> list[str]:
 
 def bank_path(product_name: str) -> Path:
     """获取产品特征库文件路径。"""
-    safe = _safe_name(product_name)
-    p = _BANKS_DIR / f"{safe}.npz"
-    _validate_path(p, _BANKS_DIR)
-    return p
+    return _resolve_bank_path(product_name, _BANKS_DIR)
 
 
 def bank_path_dinov2(product_name: str) -> Path:
     """获取产品 DINOv2 特征库文件路径。"""
-    safe = _safe_name(product_name)
-    p = _BANKS_DV_DIR / f"{safe}.npz"
-    _validate_path(p, _BANKS_DV_DIR)
-    return p
+    return _resolve_bank_path(product_name, _BANKS_DV_DIR)
 
 
 def bank_exists(product_name: str) -> bool:
@@ -177,10 +186,7 @@ def list_banks_subspace() -> list[str]:
 
 def bank_path_subspace(product_name: str) -> Path:
     """获取产品 SubspaceAD 特征库文件路径。"""
-    safe = _safe_name(product_name)
-    p = _BANKS_SA_DIR / f"{safe}.npz"
-    _validate_path(p, _BANKS_SA_DIR)
-    return p
+    return _resolve_bank_path(product_name, _BANKS_SA_DIR)
 
 
 def delete_bank_subspace(product_name: str) -> bool:
