@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-08-04
+
+### Fixed
+
+- 补齐 v1.4.0 报告中 §5.1 PixOOD 实现（`_reinit_dead_etalons`/`_fit_etalon_np_stats`）
+- 补入 §5.3 `scripts/mine_prompts.py` 提示词挖掘工具链
+- 同步 §5.4 YOLO11 训练基线默认值（`train_yolo.py` default=yolo11n）
+- 补入 `eval_acceptance.py` 的 dvab/prompts 评估模式
+
 ### Added
 
 - **SubspaceAD 快速换线辅助通道** (`engines/vision/subspace_ad.py`): CVPR 2026 (arXiv 2602.23013, Apache-2.0 已核验) 免训练异常检测的工程适配独立实现（不 vendor 原始代码，依 Apache-2.0 署名）。DINOv2-S/14 patch tokens 多层(-4,-5)均值聚合 → PCA 子空间（累计解释方差 τ=0.99 自动选维）→ 重构残差 → 高斯模糊后 top-1% 均值。1-4 张 OK 图触发快速换线模式（旋转增广建库），≥5 张走标准模式。与 dinov2 引擎共享权重，显存 ~1GB，`resident=False` 按需加载。新增 `tests/test_subspace_ad.py` 20 例
