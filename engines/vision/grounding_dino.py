@@ -66,6 +66,7 @@ class GroundingDINOEngine(BaseEngine):
                 model=model_id,
                 device=device,
             )
+            self._model = None
             # FP16 可选: 默认 FP32 保证兼容性 (实测仅 ~1GB VRAM, 无需省显存)
             # transformers 5.x 的 image_processor 输出 FP32, 强制 FP16 会导致
             # "expected scalar type Half but found Float" 推理全部失败
@@ -73,10 +74,20 @@ class GroundingDINOEngine(BaseEngine):
             if device >= 0 and use_fp16:
                 import torch
                 pipe_kwargs["dtype"] = torch.float16
-            self._model = hf_pipeline(**pipe_kwargs)
+
+            # v1.3.0 P0-5: 本地缓存优先, 消除每次加载的 HF 308 redirect / 联网探测开销。
+            # HF_HOME 缓存命中 → local_files_only=True 全离线; 缓存缺失 → 回退联网下载(首次)。
+            try:
+                self._model = hf_pipeline(local_files_only=True, **pipe_kwargs)
+                source = "本地缓存(离线)"
+            except Exception as cache_err:
+                logger.info("Grounding DINO 本地缓存缺失 (%s), 回退联网下载...", cache_err)
+                self._model = hf_pipeline(**pipe_kwargs)
+                source = "网络下载"
+
             self.state = EngineState.READY
-            logger.info("Grounding DINO 就绪 (%s)",
-                        "FP16" if (device >= 0 and use_fp16) else "FP32")
+            logger.info("Grounding DINO 就绪 (%s, 来源: %s)",
+                        "FP16" if (device >= 0 and use_fp16) else "FP32", source)
         except Exception as e:
             logger.error("Grounding DINO 加载失败: %s", e)
             self.state = EngineState.ERROR
