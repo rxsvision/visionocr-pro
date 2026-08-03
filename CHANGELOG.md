@@ -7,9 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Registry 并发模型重构: per-engine 锁替代全局锁 (模型加载不再阻塞其他引擎), 新增 infer 租约机制防止推理中引擎被驱逐/卸载 (修复 C-1)
+
 ### Fixed
 
 - 路径清洗回退兼容: 旧产品配方/特征库文件名 (含 `.` 等特殊字符) 仍可读取/覆写, 新增 `tests/test_path_safety.py` 17 项用例
+
+### Added
+
+- `tests/test_registry_concurrency.py`: Registry 并发/租约/驱逐 12 项用例
+- 补建 v1.4.1 GitHub Release
 
 ## [1.4.1] - 2026-08-04
 

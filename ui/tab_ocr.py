@@ -435,27 +435,28 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
             except Exception:
                 infer_path = geo_path
 
-        # 推理 (Timer 记录各引擎真实耗时 → 状态卡片)
+        # 推理 (Timer 记录各引擎真实耗时 → 状态卡片; infer 租约保护 v1.5.0)
         from core.infer_stats import Timer
         try:
             with Timer(getattr(engine.meta, "name", engine_key)):
-                result = engine.infer(infer_path)
+                with registry.lease(engine_key) as _eng:
+                    result = _eng.infer(infer_path)
             if "error" in result and engine_key != "rapidocr":
                 # v1.3.0: 降级不再静默 — UI 明示引擎切换与精度风险
                 yield (None, "", "—", "—", "—", {},
                        log(f"⚠ {engine_key} 推理返回异常, 已降级 rapidocr (精度可能下降)"))
-                fallback = registry.ensure_loaded("rapidocr")
-                with Timer("rapidocr"):
-                    result = fallback.infer(infer_path)
+                with registry.lease("rapidocr") as fallback:
+                    with Timer("rapidocr"):
+                        result = fallback.infer(infer_path)
                 engine, engine_key = fallback, "rapidocr"  # 后续目标直接用 rapidocr
         except Exception as e:
             if engine_key != "rapidocr":
                 yield (None, "", "—", "—", "—", {},
                        log(f"⚠ {engine_key} 推理异常 ({e}), 已降级 rapidocr (精度可能下降)"))
                 try:
-                    engine_fb = registry.ensure_loaded("rapidocr")
-                    with Timer("rapidocr"):
-                        result = engine_fb.infer(infer_path)
+                    with registry.lease("rapidocr") as engine_fb:
+                        with Timer("rapidocr"):
+                            result = engine_fb.infer(infer_path)
                     engine, engine_key = engine_fb, "rapidocr"
                 except Exception:
                     result = {"text": "", "error": str(e), "confidence": 0}
@@ -465,7 +466,8 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
         # 双路径对比 (预处理 vs 原图) — M-2: 综合置信度+文本完整度
         if pp_enable and infer_path != geo_path and pp_meta.get("steps"):
             try:
-                result_orig = engine.infer(geo_path)
+                with registry.lease(engine_key) as _eng2:
+                    result_orig = _eng2.infer(geo_path)
                 text_pp = result.get("text", "") or ""
                 text_orig = result_orig.get("text", "") or ""
                 if text_orig:  # 原图有结果才比较

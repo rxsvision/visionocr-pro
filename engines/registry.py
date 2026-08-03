@@ -6,16 +6,35 @@
 3. LRU 策略自动加载/卸载, 保证不超显存预算
    (常驻引擎 resident=True 永不驱逐, v1.3.0)
 4. 空闲超时自动卸载 (后台线程, idle_unload_sec 生效, v1.3.0)
+
+并发模型 (v1.5.0 重构, 修复 C-1):
+- per-engine 锁: 模型加载/卸载只锁该引擎自身, 不再用全局锁阻塞
+  其他引擎的加载与推理调度 (此前全局锁在 load() 期间持有数秒)。
+- infer 租约: 推理期间持有租约, 驱逐/空闲卸载/显式卸载均跳过
+  有活跃租约的引擎, 杜绝"推理中引擎被卸载"崩溃。
+- 锁序约定: 引擎槽锁 → 簿记锁 (self._lock); 持 self._lock 时
+  禁止再获取引擎槽锁, 避免死锁。
 """
 import logging
 import threading
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from typing import Optional
 
 from engines.base import BaseEngine, EngineState
 
 logger = logging.getLogger("visionocr.registry")
+
+
+class _EngineSlot:
+    """单引擎并发槽: 串行化该引擎的 load/unload, 并跟踪推理租约。"""
+
+    __slots__ = ("cv", "in_use")
+
+    def __init__(self):
+        self.cv = threading.Condition(threading.Lock())
+        self.in_use = 0  # 活跃 infer 租约数
 
 
 class EngineRegistry:
@@ -26,8 +45,10 @@ class EngineRegistry:
         self.idle_unload_sec: int = vram_cfg.get("idle_unload_sec", 300)
 
         self._engines: dict[str, BaseEngine] = {}
+        self._slots: dict[str, _EngineSlot] = {}
         # LRU: 最近使用在前 (常驻引擎不入队, 天然豁免驱逐/空闲卸载)
         self._lru: OrderedDict[str, float] = OrderedDict()
+        # 簿记锁: 仅保护 _lru 读写, 禁止在持锁期间做模型加载/卸载
         self._lock = threading.Lock()
 
         # v1.3.0: 空闲超时卸载后台线程 (此前 idle_unload_sec 为死配置)
@@ -45,6 +66,7 @@ class EngineRegistry:
         if name in self._engines:
             raise ValueError(f"Engine '{name}' already registered")
         self._engines[name] = engine
+        self._slots[name] = _EngineSlot()
 
     # 引擎清单: (module_path, class_name)
     ENGINE_MANIFEST = [
@@ -117,77 +139,153 @@ class EngineRegistry:
             })
         return result
 
+    # ─── infer 租约 ─────────────────────────────────────────
+    def acquire_lease(self, name: str) -> None:
+        """登记一次推理占用 (须与 release_lease 配对)。"""
+        slot = self._slots.get(name)
+        if slot is None:
+            return
+        with slot.cv:
+            slot.in_use += 1
+
+    def release_lease(self, name: str) -> None:
+        slot = self._slots.get(name)
+        if slot is None:
+            return
+        with slot.cv:
+            slot.in_use = max(0, slot.in_use - 1)
+            slot.cv.notify_all()
+
+    @contextmanager
+    def lease(self, name: str):
+        """推理租约上下文: ensure_loaded + 持有租约, 期间引擎不会被卸载。
+
+        用法:
+            with registry.lease("anomalib") as engine:
+                result = engine.infer(path)
+        """
+        engine = self.ensure_loaded(name)
+        self.acquire_lease(name)
+        try:
+            yield engine
+        finally:
+            self.release_lease(name)
+
     # ─── LRU 加载/卸载 ─────────────────────────────────────
     def ensure_loaded(self, name: str) -> BaseEngine:
-        """确保引擎已加载, 必要时驱逐 LRU 尾部引擎腾出显存"""
+        """确保引擎已加载, 必要时驱逐 LRU 尾部引擎腾出显存。
+
+        并发: 仅持有该引擎自身的槽锁; 慢速 load() 不阻塞其他引擎。
+        """
         engine = self._engines.get(name)
         if engine is None:
             raise KeyError(f"Engine '{name}' not registered")
 
-        with self._lock:
-            # 双重检查: 锁内再次确认状态 (防止并发重复加载)
+        # 快路径: 已就绪, 无需加槽锁
+        if engine.is_ready():
+            self._touch(name)
+            return engine
+
+        slot = self._slots[name]
+        with slot.cv:
+            # 双重检查: 槽锁内再次确认 (防止并发重复加载)
             if engine.is_ready():
                 self._touch(name)
                 return engine
 
             needed = engine.meta.vram_gb
-            # 驱逐直到有足够空间 (常驻引擎 resident=True 永不驱逐)
+            # 驱逐直到有足够空间 (常驻引擎 resident=True 永不驱逐;
+            # 有活跃推理租约的引擎跳过, 防推理中被卸载)
+            excluded = {name}
             while self._used_vram() + needed > self.max_budget_gb:
-                victim = self._pick_eviction_victim()
+                victim = self._pick_eviction_victim(excluded)
                 if victim is None:
-                    logger.warning("显存预算不足但无可驱逐引擎 (常驻引擎受保护), "
-                                   "仍需 %.1fGB", needed)
+                    logger.warning("显存预算不足但无可驱逐引擎 "
+                                   "(常驻/在用引擎受保护), 仍需 %.1fGB", needed)
                     break
-                evict_eng = self._engines[victim]
+                if not self._try_unload(victim):
+                    excluded.add(victim)  # 在用: 跳过换下一个
+                    continue
                 logger.info("LRU 驱逐 %s 以释放显存", victim)
-                evict_eng.unload()
-                self._lru.pop(victim, None)
 
             engine.state = EngineState.LOADING
-            engine.load()
+            try:
+                engine.load()
+            except Exception:
+                engine.state = EngineState.ERROR
+                raise
             self._touch(name)
         return engine
 
     def unload(self, name: str) -> None:
+        """显式卸载 (UI 面板触发)。有活跃推理租约时跳过并告警。"""
         engine = self._engines.get(name)
-        if engine and engine.is_ready():
-            engine.unload()
-            self._lru.pop(name, None)
+        if not engine or not engine.is_ready():
+            return
+        if not self._try_unload(name):
+            logger.warning("卸载 %s 被跳过: 推理租约活跃中", name)
 
     def unload_all(self) -> None:
-        with self._lock:
-            for name, eng in self._engines.items():
-                if eng.is_ready():
-                    eng.unload()
-            self._lru.clear()
+        for name, eng in list(self._engines.items()):
+            if eng.is_ready():
+                if not self._try_unload(name):
+                    logger.warning("unload_all 跳过 %s: 推理租约活跃中", name)
 
     # ─── 内部 ───────────────────────────────────────────────
     def _touch(self, name: str):
-        engine = self._engines.get(name)
-        # 常驻引擎不入 LRU 队列 → 永不驱逐/空闲卸载 (v1.3.0)
-        if engine is not None and getattr(engine.meta, "resident", False):
+        with self._lock:
+            engine = self._engines.get(name)
+            # 常驻引擎不入 LRU 队列 → 永不驱逐/空闲卸载 (v1.3.0)
+            if engine is not None and getattr(engine.meta, "resident", False):
+                self._lru.pop(name, None)
+                return
             self._lru.pop(name, None)
-            return
-        self._lru.pop(name, None)
-        self._lru[name] = time.time()
+            self._lru[name] = time.time()
 
-    def _pick_eviction_victim(self) -> Optional[str]:
-        """按最久未使用顺序, 挑选第一个非常驻、已加载的驱逐候选。"""
-        # OrderedDict 尾部为最近使用 → 从头部(last=False)开始即最久未使用
-        for name in list(self._lru.keys()):
+    def _pick_eviction_victim(self, excluded: set[str]) -> Optional[str]:
+        """按最久未使用顺序, 挑选第一个非常驻、已加载、无租约的驱逐候选。"""
+        with self._lock:
+            names = list(self._lru.keys())
+        # OrderedDict 尾部为最近使用 → 从头部开始即最久未使用
+        for name in names:
+            if name in excluded:
+                continue
             eng = self._engines.get(name)
             if eng is None:
                 continue
             if getattr(eng.meta, "resident", False):
                 continue
-            if eng.is_ready():
-                return name
+            if not eng.is_ready():
+                continue
+            slot = self._slots.get(name)
+            if slot is not None and slot.in_use > 0:
+                continue  # 推理中: 不可驱逐
+            return name
         return None
+
+    def _try_unload(self, name: str) -> bool:
+        """在该引擎槽锁内安全卸载。返回 False 表示有活跃租约被跳过。"""
+        eng = self._engines.get(name)
+        slot = self._slots.get(name)
+        if slot is None:
+            return True
+        with slot.cv:
+            if slot.in_use > 0:
+                return False
+            if eng is not None and eng.is_ready():
+                try:
+                    eng.unload()
+                except Exception as e:
+                    logger.warning("卸载 %s 失败: %s", name, e)
+        with self._lock:
+            self._lru.pop(name, None)
+        return True
 
     def _idle_unload_loop(self):
         """后台线程: 卸载空闲超时引擎 (v1.3.0 让 idle_unload_sec 生效)。
 
         常驻引擎不在 LRU 队列中, 天然豁免。
+        有活跃推理租约的引擎跳过并续期, 下轮再试 (v1.5.0)。
         """
         interval = max(5, min(60, self.idle_unload_sec // 10))
         while not self._stop_idle.wait(interval):
@@ -196,23 +294,36 @@ class EngineRegistry:
                 expired = [n for n, t in list(self._lru.items())
                            if now - t > self.idle_unload_sec]
                 for name in expired:
-                    eng = self._engines.get(name)
                     self._lru.pop(name, None)
-                    if eng is not None and eng.is_ready():
-                        logger.info("空闲超时 (%ds), 卸载 %s",
-                                    self.idle_unload_sec, name)
-                        try:
-                            eng.unload()
-                        except Exception as e:
-                            logger.warning("空闲卸载 %s 失败: %s", name, e)
+            for name in expired:
+                eng = self._engines.get(name)
+                if eng is None or not eng.is_ready():
+                    continue
+                if self._try_unload(name):
+                    logger.info("空闲超时 (%ds), 卸载 %s",
+                                self.idle_unload_sec, name)
+                else:
+                    # 推理中: 续期, 避免下一轮立即重试抖动
+                    logger.debug("空闲卸载 %s 跳过: 推理租约活跃", name)
+                    self._touch(name)
 
     def shutdown(self):
         """停止空闲卸载线程并卸载所有已加载引擎 (进程退出清理)。
 
         常驻引擎也在此卸载 — 常驻豁免的是"运行期"驱逐/空闲卸载,
         进程退出时仍应释放资源 (如 PP-OCRv6 常驻容器)。
+        有活跃租约的引擎最多等待 30s (v1.5.0)。
         """
         self._stop_idle.set()
+        deadline = time.time() + 30
+        for name, slot in self._slots.items():
+            with slot.cv:
+                while slot.in_use > 0:
+                    remain = deadline - time.time()
+                    if remain <= 0:
+                        logger.warning("shutdown: %s 租约未释放, 强制继续", name)
+                        break
+                    slot.cv.wait(timeout=remain)
         for name, eng in list(self._engines.items()):
             if eng.is_ready():
                 try:
@@ -228,12 +339,17 @@ class EngineRegistry:
         )
 
     def status(self) -> dict:
-        return {
-            "max_budget_gb": self.max_budget_gb,
-            "used_gb": round(self._used_vram(), 2),
-            "loaded": [n for n, e in self._engines.items() if e.is_ready()],
-            "resident": [n for n, e in self._engines.items()
-                         if e.is_ready() and getattr(e.meta, "resident", False)],
-            "idle_unload_sec": self.idle_unload_sec,
-            "registered": len(self._engines),
-        }
+        with self._lock:
+            loaded = [n for n, e in self._engines.items() if e.is_ready()]
+            return {
+                "max_budget_gb": self.max_budget_gb,
+                "used_gb": round(self._used_vram(), 2),
+                "loaded": loaded,
+                "resident": [n for n, e in self._engines.items()
+                             if e.is_ready()
+                             and getattr(e.meta, "resident", False)],
+                "in_use": [n for n, s in self._slots.items()
+                           if s.in_use > 0],
+                "idle_unload_sec": self.idle_unload_sec,
+                "registered": len(self._engines),
+            }

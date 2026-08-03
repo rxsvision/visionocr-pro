@@ -252,8 +252,11 @@ def run_detection(registry, image_path: str, prompt: str = "",
         prompt = DEFAULT_PROMPT
     en_prompt = translate_prompt(prompt)
     from core.infer_stats import Timer
-    with Timer("grounding_dino"):
-        result = engine.infer(image_path, prompt=en_prompt, threshold=threshold)
+    # infer 租约: 推理期间引擎不会被 LRU 驱逐/空闲卸载 (v1.5.0)
+    with registry.lease("grounding_dino"):
+        with Timer("grounding_dino"):
+            result = engine.infer(image_path, prompt=en_prompt,
+                                  threshold=threshold)
 
     if result.get("error"):
         return {"image": img, "verdict": "ERROR", "detections": [],
@@ -332,11 +335,12 @@ def run_anomaly_detection(registry, image_path: str,
                 "anomaly_map": None,
                 "error": "记忆库为空, 请先注册OK样本 (train/load_bank)"}
 
-    # 推理
+    # 推理 (infer 租约保护, v1.5.0)
     kwargs = {}
     if threshold is not None:
         kwargs["threshold"] = threshold
-    result = engine.infer(image_path, **kwargs)
+    with registry.lease("anomalib"):
+        result = engine.infer(image_path, **kwargs)
 
     if result.get("error"):
         return {"image": img, "verdict": "ERROR", "score": 0,
@@ -509,17 +513,29 @@ def run_union_detection(registry, image_path: str,
     # ── 1x) 表面双源并行推理 (P0-6: PatchCore ∥ DINOv2, 热路径提速) ──
     # 准备阶段 (ensure_loaded/特征库加载) 已在主线程串行完成,
     # 推理本身无 registry 状态变更, 两引擎相互独立, 线程安全。
-    if pc_engine is not None and dv_engine is not None:
-        with ThreadPoolExecutor(max_workers=2,
-                                thread_name_prefix="union") as ex:
-            f_pc = ex.submit(pc_engine.infer, image_path, **pc_kwargs)
-            f_dv = ex.submit(dv_engine.infer, image_path, **dv_kwargs)
-            pc_result = f_pc.result()
-            dv_result = f_dv.result()
-    elif pc_engine is not None:
-        pc_result = pc_engine.infer(image_path, **pc_kwargs)
-    elif dv_engine is not None:
-        dv_result = dv_engine.infer(image_path, **dv_kwargs)
+    # infer 租约: 推理窗口内禁止驱逐/卸载参与引擎 (v1.5.0)
+    _leased: list[str] = []
+    if pc_engine is not None:
+        registry.acquire_lease("anomalib")
+        _leased.append("anomalib")
+    if dv_engine is not None:
+        registry.acquire_lease("dinov2_anomaly")
+        _leased.append("dinov2_anomaly")
+    try:
+        if pc_engine is not None and dv_engine is not None:
+            with ThreadPoolExecutor(max_workers=2,
+                                    thread_name_prefix="union") as ex:
+                f_pc = ex.submit(pc_engine.infer, image_path, **pc_kwargs)
+                f_dv = ex.submit(dv_engine.infer, image_path, **dv_kwargs)
+                pc_result = f_pc.result()
+                dv_result = f_dv.result()
+        elif pc_engine is not None:
+            pc_result = pc_engine.infer(image_path, **pc_kwargs)
+        elif dv_engine is not None:
+            dv_result = dv_engine.infer(image_path, **dv_kwargs)
+    finally:
+        for _n in _leased:
+            registry.release_lease(_n)
 
     # PatchCore 后处理 (保持原 ng_sources 追加顺序)
     if pc_result is not None:
@@ -549,8 +565,9 @@ def run_union_detection(registry, image_path: str,
         yolo_eng = registry.get("yolo_defect")
         if yolo_eng is not None and yolo_eng.load_for_product(product_name):
             from core.infer_stats import Timer
-            with Timer("yolo_defect"):
-                yolo_result = yolo_eng.infer(image_path)
+            with registry.lease("yolo_defect"):
+                with Timer("yolo_defect"):
+                    yolo_result = yolo_eng.infer(image_path)
             if yolo_result.get("error"):
                 logger.warning("Union/YOLO 错误: %s", yolo_result["error"])
                 yolo_result = None
