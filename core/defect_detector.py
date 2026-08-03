@@ -527,12 +527,29 @@ def run_union_detection(registry, image_path: str,
                                     thread_name_prefix="union") as ex:
                 f_pc = ex.submit(pc_engine.infer, image_path, **pc_kwargs)
                 f_dv = ex.submit(dv_engine.infer, image_path, **dv_kwargs)
-                pc_result = f_pc.result()
-                dv_result = f_dv.result()
+                # 单源异常不得拖垮整体: 置 error 结果, 下游统一降级处理
+                try:
+                    pc_result = f_pc.result()
+                except Exception as e:
+                    logger.warning("Union/PatchCore 推理异常: %s", e)
+                    pc_result = {"error": str(e)}
+                try:
+                    dv_result = f_dv.result()
+                except Exception as e:
+                    logger.warning("Union/DINOv2 推理异常: %s", e)
+                    dv_result = {"error": str(e)}
         elif pc_engine is not None:
-            pc_result = pc_engine.infer(image_path, **pc_kwargs)
+            try:
+                pc_result = pc_engine.infer(image_path, **pc_kwargs)
+            except Exception as e:
+                logger.warning("Union/PatchCore 推理异常: %s", e)
+                pc_result = {"error": str(e)}
         elif dv_engine is not None:
-            dv_result = dv_engine.infer(image_path, **dv_kwargs)
+            try:
+                dv_result = dv_engine.infer(image_path, **dv_kwargs)
+            except Exception as e:
+                logger.warning("Union/DINOv2 推理异常: %s", e)
+                dv_result = {"error": str(e)}
     finally:
         for _n in _leased:
             registry.release_lease(_n)
@@ -567,7 +584,11 @@ def run_union_detection(registry, image_path: str,
             from core.infer_stats import Timer
             with registry.lease("yolo_defect"):
                 with Timer("yolo_defect"):
-                    yolo_result = yolo_eng.infer(image_path)
+                    try:
+                        yolo_result = yolo_eng.infer(image_path)
+                    except Exception as e:
+                        logger.warning("Union/YOLO 推理异常: %s", e)
+                        yolo_result = {"error": str(e)}
             if yolo_result.get("error"):
                 logger.warning("Union/YOLO 错误: %s", yolo_result["error"])
                 yolo_result = None
