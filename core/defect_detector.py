@@ -58,6 +58,21 @@ DEFAULT_PROMPT = "划痕.凹陷.裂纹.污渍.毛刺.色差.缺件.变形"
 _RECIPES_DIR = Path("data/recipes")
 
 
+def _safe_name(name: str) -> str:
+    """清洗产品配方名，防止路径穿越攻击。"""
+    import re
+    s = re.sub(r'[\\/:*?"<>|.]', '_', str(name).strip())
+    return s or '_'
+
+
+def _recipe_path(name: str) -> Path:
+    """构造并校验配方路径不越界。"""
+    p = (_RECIPES_DIR / f"{_safe_name(name)}.json").resolve()
+    if not p.is_relative_to(_RECIPES_DIR.resolve()):
+        raise ValueError(f"路径越界: {name} 非法")
+    return p
+
+
 def translate_prompt(prompt: str) -> str:
     """将中文缺陷提示词翻译为英文 (点号分隔)。
 
@@ -87,7 +102,10 @@ def list_recipes() -> list[str]:
 
 def load_recipe(name: str) -> Optional[dict]:
     """加载产品配方。"""
-    p = _RECIPES_DIR / f"{name}.json"
+    try:
+        p = _recipe_path(name)
+    except ValueError:
+        return None
     if not p.exists():
         return None
     try:
@@ -102,8 +120,9 @@ def save_recipe(name: str, prompt: str, threshold: float = 0.3,
                 pixels_per_mm: float = 0.0) -> None:
     """保存产品配方 (含瑕疵尺寸阈值)。"""
     _RECIPES_DIR.mkdir(parents=True, exist_ok=True)
+    safe = _safe_name(name)
     data = {
-        "name": name,
+        "name": safe,
         "prompt": prompt,
         "threshold": threshold,
         "note": note,
@@ -113,13 +132,16 @@ def save_recipe(name: str, prompt: str, threshold: float = 0.3,
             "pixels_per_mm": pixels_per_mm,
         },
     }
-    p = _RECIPES_DIR / f"{name}.json"
+    p = _recipe_path(safe)
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def delete_recipe(name: str) -> bool:
     """删除产品配方。"""
-    p = _RECIPES_DIR / f"{name}.json"
+    try:
+        p = _recipe_path(name)
+    except ValueError:
+        return False
     if p.exists():
         p.unlink()
         return True

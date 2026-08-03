@@ -18,6 +18,22 @@ _BANKS_DIR = Path("data/banks")
 _BANKS_DV_DIR = Path("data/banks_dinov2")  # DINOv2 库独立目录 (与 PatchCore 隔离)
 
 
+def _safe_name(name: str) -> str:
+    """清洗产品名，防止路径穿越攻击。"""
+    import re
+    # 移除所有路径分隔符和特殊字符
+    s = re.sub(r'[\\/:*?"<>|.]', '_', name.strip())
+    return s or '_'
+
+
+def _validate_path(path: Path, root: Path) -> Path:
+    """验证路径不越界。"""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise ValueError(f"路径越界: {path} 不在 {root} 内")
+    return resolved
+
+
 def list_banks() -> list[str]:
     """列出所有已建库的产品名。"""
     if not _BANKS_DIR.exists():
@@ -34,12 +50,18 @@ def list_banks_dinov2() -> list[str]:
 
 def bank_path(product_name: str) -> Path:
     """获取产品特征库文件路径。"""
-    return _BANKS_DIR / f"{product_name}.npz"
+    safe = _safe_name(product_name)
+    p = _BANKS_DIR / f"{safe}.npz"
+    _validate_path(p, _BANKS_DIR)
+    return p
 
 
 def bank_path_dinov2(product_name: str) -> Path:
     """获取产品 DINOv2 特征库文件路径。"""
-    return _BANKS_DV_DIR / f"{product_name}.npz"
+    safe = _safe_name(product_name)
+    p = _BANKS_DV_DIR / f"{safe}.npz"
+    _validate_path(p, _BANKS_DV_DIR)
+    return p
 
 
 def bank_exists(product_name: str) -> bool:
@@ -155,7 +177,10 @@ def list_banks_subspace() -> list[str]:
 
 def bank_path_subspace(product_name: str) -> Path:
     """获取产品 SubspaceAD 特征库文件路径。"""
-    return _BANKS_SA_DIR / f"{product_name}.npz"
+    safe = _safe_name(product_name)
+    p = _BANKS_SA_DIR / f"{safe}.npz"
+    _validate_path(p, _BANKS_SA_DIR)
+    return p
 
 
 def delete_bank_subspace(product_name: str) -> bool:

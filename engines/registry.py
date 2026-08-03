@@ -85,9 +85,14 @@ class EngineRegistry:
                 cls = getattr(mod, class_name)
                 self.register(cls(self.config))
                 ok_count += 1
-            except Exception as e:
+            except ImportError as e:
+                # 依赖缺失属预期跳过 (如 GPU 库未安装), 仅记 debug
                 skip_count += 1
-                logger.debug("跳过 %s: %s", class_name, e)
+                logger.debug("跳过 %s (依赖缺失): %s", class_name, e)
+            except Exception as e:
+                # 非预期异常 (引擎初始化 bug/配置错误), 需引起注意
+                skip_count += 1
+                logger.warning("引擎 %s 注册失败: %s", class_name, e)
         elapsed = time.time() - t0
         logger.info("注册完成: %d 引擎, %d 跳过 (耗时 %.2fs)",
                     ok_count, skip_count, elapsed)

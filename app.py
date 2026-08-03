@@ -224,14 +224,31 @@ def main():
         from ui.main import create_app, THEME, CSS
         app = create_app(cfg, registry)
         port = cfg.get("server_port", 7860)
-        logger.info("Web UI 启动: http://localhost:%d", port)
+        server_name = cfg.get("server_name", "127.0.0.1")
+        ui_password = cfg.get("ui_password", "").strip()
+
+        # 安全策略: 绑定非 localhost 时必须配置密码
+        if server_name not in ("127.0.0.1", "localhost") and not ui_password:
+            logger.critical("安全拒绝: server_name=%s 但未配置 ui_password", server_name)
+            _fatal_exit("安全配置缺失",
+                        f"绑定非 localhost ({server_name}) 时必须配置 UI 密码。\n"
+                        f"请在 config.yaml 设置 ui_password 或环境变量 UI_PASSWORD。")
+            return
+
+        # 构建认证参数
+        auth = ("admin", ui_password) if ui_password else None
+        data_dir = cfg.get("data_dir", "data")
+
+        logger.info("Web UI 启动: http://%s:%d (auth=%s)", server_name, port, "on" if auth else "off")
         app.launch(
-            server_name=cfg.get("server_name", "127.0.0.1"),
+            server_name=server_name,
             server_port=port,
             share=False,
             inbrowser=True,
             theme=THEME,
             css=CSS,
+            auth=auth,
+            allowed_paths=[data_dir],
         )
     except OSError as e:
         if "address already in use" in str(e).lower() or "10048" in str(e):

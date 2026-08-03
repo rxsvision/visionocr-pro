@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -29,6 +30,8 @@ from core.calibration_protocol import (
     MIN_CAL_RECOMMENDED, format_report_md, recalibrate_product,
 )
 from core.fusion import calibrated_n_samples, fusion_stage
+
+logger = logging.getLogger("visionocr.tab_qc")
 
 _registry = None
 _config = None
@@ -466,8 +469,8 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
                 persist_qc_image(image_path, Path(data_dir) / "qc_images"),
                 verdict, detections, max_score, f"[Union] {prompt}")
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("QC 结果落库失败: %s", e)
 
         active = [s for s, r in (("PatchCore", pc), ("DINO", dino),
                                  ("YOLO", yolo), ("DINOv2", dv))
@@ -552,8 +555,8 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
             persist_qc_image(image_path, Path(data_dir) / "qc_images"),
             verdict, result["detections"], max_score, prompt)
         conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("QC 结果落库失败: %s", e)
 
     status = f"检测完成 · 提示词: {prompt[:60]}... · 阈值: {threshold}"
     yield (result["image"], verdict_str, f"{max_score:.2%}",

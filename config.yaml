@@ -3,6 +3,8 @@
 
 server_name: "127.0.0.1"
 server_port: 7860
+# UI 认证密码 (绑定非 localhost 时必填, 环境变量 UI_PASSWORD 覆盖)
+ui_password: "${UI_PASSWORD:-}"
 
 # 模型权重目录 (相对项目根或绝对路径)
 models_dir: "models"

@@ -1,9 +1,12 @@
 """OCR 通用识别 Tab - 三引擎自动路由 + 图像预处理 + 进度日志"""
+import logging
 import time
 import gradio as gr
 from pathlib import Path
 
 from ui.safe_yield import safe_generator
+
+logger = logging.getLogger("visionocr.tab_ocr")
 
 
 def _imread_safe(path: str, flags=None):
@@ -642,8 +645,8 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
             "corrections": corrections,
             "elapsed_sec": round(elapsed, 3),
         })
-    except Exception:
-        pass  # 审计失败不阻断主流程
+    except Exception as e:
+        logger.warning("OCR 审计写入失败 (不阻断主流程): %s", e)
 
     _cleanup_temps()
     yield (verdict_rows, combined_text, scene_display, engine_display,
