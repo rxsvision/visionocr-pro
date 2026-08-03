@@ -7,25 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-04
+
 ### Added
 
-- **SubspaceAD 快速换线辅助通道** (`engines/vision/subspace_ad.py`): CVPR 2026 (arXiv 2602.23013, Apache-2.0 已核验) 免训练异常检测的工程适配独立实现（不 vendor 原始代码，依 Apache-2.0 署名）。DINOv2-S/14 patch tokens 多层(-4,-5)均值聚合 → PCA 子空间（累计解释方差 τ=0.99 自动选维）→ 重构残差 → 高斯模糊后 top-1% 均值。1-4 张 OK 图触发快速换线模式（旋转增广建库），≥5 张走标准模式。与 dinov2 引擎共享权重，显存 ~1GB，`resident=False` 按需加载。新增 `tests/test_subspace_ad.py` 20 例
-- **SubspaceAD 特征库管理** (`core/anomaly_bank.py`): 独立目录 `data/banks_subspacead/`，注册/加载/删除/自动发现唯一库；`run_subspace_detection` 产出热力图叠加（橙色 REVIEW 标注）+ 审计 PNG 持久化
-- **QC 面板快速换线 UI** (`ui/tab_qc.py`): 检测模式新增「快速换线辅助 (SubspaceAD)」；工程师面板新增辅助通道建库区（1-4 张快速 / ≥10 张标准）；检测结果明示「仅供参考, 需人工复核」
-- **防退化验收指标** (`scripts/eval_acceptance.py`): `mode_subspacead` + `_recall_at_matched_fpr` —— 阈值锚定共同 holdout 正常图的匹配 FPR 口径，杜绝自校准阈值塌陷（全判 NG）虚高 Recall 的假 PASS
+- **SubspaceAD 快速换线辅助通道** (`engines/vision/subspace_ad.py`): PCA 子空间免训练异常检测，1-4 张 OK 图快速换线，≥5 张标准模式，与 DINOv2 共享权重；新增 `tests/test_subspace_ad.py` 20 例
+- **SubspaceAD 特征库管理** (`core/anomaly_bank.py`): `data/banks_subspacead/` 独立目录，注册/加载/删除/自动发现；热力图叠加 + 审计 PNG 持久化
+- **QC 面板快速换线 UI** (`ui/tab_qc.py`): 检测模式新增「快速换线辅助 (SubspaceAD)」；结果明示「仅供参考, 需人工复核」
+- **防退化验收指标** (`scripts/eval_acceptance.py`): `mode_subspacead` + `_recall_at_matched_fpr` 阈值锚定共同 holdout FPR 口径
+- **分阶段融合决策** (`core/fusion.py`): Union 判决按 n_cal 分阶段收紧 — Stage 1 纯 OR / Stage 2 双源互证+孤证 REVIEW / Stage 3 漂移预警；UI 同步展示融合阶段
+- **校准协议** (`core/calibration_protocol.py`): 建库后补采 ≥30 张独立 OK 图逐源重标定 NP 阈值；验收报告含 τ 变化/阶段警告；新增 `tests/test_calibration_protocol.py` 25 例
+- **GitHub Actions 自动 Release 工作流** (`.github/workflows/release.yml`): tag push 触发测试矩阵 → 自动从 CHANGELOG 提取 release notes → 创建 GitHub Release
 
 ### Changed
 
-- **SubspaceAD 定位为辅助提示通道（诚实降级）**: KolektorSDD 实测 1-shot 未达 §5.2 验收门槛 —— 匹配 FPR=0.10 口径 Recall 比值 56.4% < 85%，AUROC 0.81 vs PatchCore 全库 0.89，且 4-shot (26.9%) 反低于 1-shot (42.3%) 不单调。故不参与 Union OR、不给自主 OK/NG 判定，仅分数+热力图供人工复核。旋转空角填充由黑 (fillcolor=0) 改为图像边缘均值色（A/B 实测 1-shot AUROC 0.68→0.85，黑角污染 PCA 子空间并抬高背景分）
+- **SubspaceAD 定位为辅助提示通道（诚实降级）**: 1-shot 未达验收门槛，不参与 Union OR，仅分数+热力图供人工复核；旋转空角填充改为图像边缘均值色
 
 ### Fixed
 
-- **快速模式退化自校准 → REVIEW 契约**: 增广视图自评分数系统性偏低（KolektorSDD 实测 tau≈0.14 vs 真实正常件均值≈0.53），快速模式若给自主判定会退化为全 NG；现快速模式 `infer()` 恒返回 `pred_label="REVIEW"` + `review_required=True`，仅在累积 ≥10 张真实 OK 图切换标准模式后才给判定
-- **灰度图热力图叠加崩溃** (`core/anomaly_bank.py`): KolektorSDD 等工业灰度图 (2D) 与 3D 彩色热力图 `cv2.addWeighted` 尺寸不匹配报错；SubspaceAD 与 PatchCore 两条叠加路径均加灰度→BGR 保护
+- **快速模式退化自校准 → REVIEW 契约**: 快速模式 `infer()` 恒返回 `pred_label="REVIEW"`，累积 ≥10 张真实 OK 图后才给判定
+- **灰度图热力图叠加崩溃**: SubspaceAD 与 PatchCore 两条路径均加灰度→BGR 保护
 
 ### Notes
 
-- SubspaceAD 论文 MVTec 1-shot 报 97.1 与本次 KolektorSDD AUROC 0.81 差距大，主因 KolektorSDD 类内几何变化（接插件位姿）远高于 MVTec —— 单一基准未达标即降级为辅助通道，不做单基准过拟合调参
+- SubspaceAD MVTec 1-shot 97.1 vs KolektorSDD AUROC 0.81 差距来类内几何变化，单一基准未达标即降级辅助通道
 - 测试 138 → 158
 
 ## [1.3.0] - 2026-08-04

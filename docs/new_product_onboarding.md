@@ -32,7 +32,9 @@ PatchCore 与 DINOv2 异常检测是"单类分类"：它们学习的是"这个�
 
 ### 第 2 步：建库（PatchCore + DINOv2 双库）
 
-UI 路径：QC Tab → 产品登记，选择 OK 样本目录。
+UI 路径：QC Tab → 工程师模式 → 「少样本注册 (PatchCore)」→ 选择/新建产品 →
+多文件上传 OK 样本 → 「📦 注册建库」。建库时自动留出尾部 20% 作 NP 校准集
+（校准图不入 bank）。
 
 工程接口（`core/anomaly_bank.py`）：
 
@@ -58,6 +60,25 @@ cal.fit(normal_scores)             # n<100 时自动输出粒度警告
 
 ε 的工业含义：最多允许 ε 比例的正常件被判 NG（过杀率上限）。
 按产线节拍与复检成本选择，常见取值 1%~5%。
+
+#### 校准协议（n_cal 扩充，方案 §6.2）
+
+建库时自动留出的校准集只有上传量的 20%（10~30 张上传 → n_cal 仅 3~6）。
+n_cal 过小会导致两个问题：阈值粒度 ~1/n 过粗（实际误报率偏离 ε），以及
+分阶段融合停留在 Stage 1（纯 OR，误报偏高）。解决办法是**建库后补采独立
+校准图重标定**：
+
+1. 补采 **≥30 张独立 OK 图**——不得是建库用图；建议变换光照/角度拍 3 组，
+   覆盖产线真实正常波动；
+2. UI：QC Tab → 工程师模式 → 「📐 校准协议」→ 选产品 → 上传校准图
+   （可选附 NG 样本做 Recall 回归）→ 执行；
+3. 系统对 PatchCore/DINOv2 逐源重标定 NP 阈值（保证不变：P(正常>τ) ≤ ε），
+   重标定写回 bank，校准集存档 `data/calibration/{产品}/{时间戳}/`；
+4. 验收报告给出 n_cal、τ（旧→新）、融合阶段变化与 NG 回归结果。
+
+融合阶段联动：n_cal ≥10 → Stage 2（双源互证，单源孤证转人工复核），
+n_cal ≥50 → Stage 3（附加漂移监控）。工程接口见
+`core/calibration_protocol.py`（`recalibrate_product` / `format_report_md`）。
 
 ### 第 4 步：NG 回归（零漏检验证）
 
@@ -92,6 +113,7 @@ YOLO + 零样本冷启动），要求 **Recall = 100%**。任何漏检都必须�
 - [ ] OK 样本 ≥50 张（推荐 ≥100），与产线同条件拍摄
 - [ ] 建库成功（PatchCore 主库 + DINOv2 副库状态确认）
 - [ ] NP 校准完成，ε 取值已按产线复检成本确定
+- [ ] 校准协议已执行：独立校准图 ≥30 张，n_cal≥30（融合 Stage ≥2）
 - [ ] 已知 NG 集 Recall = 100%
 - [ ] OK 验证集误报率 ≤ ε
 - [ ] 产品名称/料号与 MES 工单字段一致
@@ -101,5 +123,8 @@ YOLO + 零样本冷启动），要求 **Recall = 100%**。任何漏检都必须�
 - 部署与环境：`DEPLOY.md`、`scripts/doctor.py`
 - 建库：`core/anomaly_bank.py`（`register_ok_samples` / `load_product_bank`）
 - 校准：`core/np_calibration.py`（`NPCalibrator`，n<100 自动警告）
-- UI 入口：`ui/tab_qc.py`（产品登记）
+- 校准协议：`core/calibration_protocol.py`（`recalibrate_product`，§6.2 n_cal 扩充）
+- 分阶段融合：`core/fusion.py`（Stage 1/2/3 与漂移监控）
+- UI 入口：`ui/tab_qc.py`（产品登记 / 校准协议）
 - 验收脚本示例：`scripts/eval_np_calibration.py`、`scripts/eval_acceptance.py`
+  （`fusion55` / `calibration` 模式）

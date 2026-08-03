@@ -54,6 +54,9 @@ class DINOv2AnomalyEngine(BaseEngine):
         self._np_calibrator = None
         self._train_scores: list[float] = []
         self._calibrated_threshold: Optional[float] = None
+        # §5.1 per-etalon 局部 NP 归一化统计 (建库时拟合, npz 持久化)
+        self._etalon_np_mu: Optional[np.ndarray] = None     # (K,)
+        self._etalon_np_sigma: Optional[np.ndarray] = None  # (K,)
 
         qc_cfg = config.get("qc", {}) or {}
         dv_cfg = qc_cfg.get("dinov2", {}) or {}
@@ -64,6 +67,12 @@ class DINOv2AnomalyEngine(BaseEngine):
         self._pca_dim: int = dv_cfg.get("pca_dim", _DEFAULT_PCA_DIM)
         self._n_etalons: int = dv_cfg.get("n_etalons", _DEFAULT_N_ETALONS)
         self._np_epsilon: float = float(dv_cfg.get("np_epsilon", 0.02))
+        # §5.1 PixOOD 思想借鉴 (自研实现, A/B 验收后决定默认值)
+        self._reinit_dead: bool = bool(dv_cfg.get("reinit_dead_etalons", False))
+        self._reinit_rounds: int = int(dv_cfg.get("reinit_rounds", 2))
+        self._dead_weight_frac: float = float(
+            dv_cfg.get("dead_weight_frac", 0.5))
+        self._per_etalon_np: bool = bool(dv_cfg.get("per_etalon_np", False))
 
     @property
     def meta(self) -> EngineMeta:
@@ -164,14 +173,25 @@ class DINOv2AnomalyEngine(BaseEngine):
         logger.info("GMM 拟合完成: %d etalons, %d 样本, %d 轮",
                     n_etalons, Xw_fit.shape[0], gmm.n_iter_)
 
+        # §5.1 P1 借鉴: 死 etalon 重初始化 (欠表达正常模式补采)
+        if self._reinit_dead and n_etalons > 1:
+            gmm = self._reinit_dead_etalons(Xw_fit, gmm)
+
         self._pca = pca
         self._gmm = gmm
+        # §5.1 P4 借鉴: per-etalon 局部 NP 归一化统计
+        self._etalon_np_mu = self._etalon_np_sigma = None
+        if self._per_etalon_np:
+            self._fit_etalon_np_stats(Xw_fit)
         self._bank_meta = {
             "n_images": n_ok,
             "n_patches": int(X.shape[0]),
             "pca_dim": int(pca_dim),
             "n_etalons": int(n_etalons),
             "img_size": self._img_size,
+            "reinit_dead": bool(self._reinit_dead),
+            "per_etalon_np": bool(self._per_etalon_np
+                                  and self._etalon_np_mu is not None),
         }
 
         # NP 校准: 留出正常样本的图像级分数

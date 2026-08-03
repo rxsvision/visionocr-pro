@@ -181,3 +181,45 @@ class NPCalibrator:
         except (KeyError, TypeError, ValueError) as e:
             logger.warning("NP校准器恢复失败: %s", e)
             return None
+
+
+def recalibrate_engine(engine, normal_scores: Sequence[float],
+                       epsilon: Optional[float] = None) -> dict:
+    """用新校准分数重拟合引擎的 NP 校准器并更新判定阈值。
+
+    供校准协议 (§6.2 n_cal 扩充) 使用: 引擎建库时仅用尾部 20% holdout
+    校准 (n_cal 常为个位数); 补采独立校准图后用本函数重拟合, 阈值统计
+    保证不变 (P(正常>tau) ≤ eps), 但粒度随 n 增大而收紧。
+
+    约定: 引擎需具备 _np_epsilon / _np_calibrator / _calibrated_threshold /
+    _train_scores 属性 (PatchCore / DINOv2 / SubspaceAD 三引擎一致)。
+    本函数不做落盘, 调用方负责 engine.save_bank(...) 持久化。
+
+    Args:
+        engine: 已建库的异常检测引擎。
+        normal_scores: 新校准集 (独立于 bank 的正常图) 的图像级分数。
+        epsilon: 目标误报率上界; None → 沿用引擎当前 _np_epsilon。
+
+    Returns:
+        {"ok": bool, "n": int, "epsilon": float, "tau": float|None,
+         "tau_before": float|None, "error": str|None}
+        拟合失败时不改动引擎现有校准状态。
+    """
+    eps = float(epsilon) if epsilon is not None else float(
+        getattr(engine, "_np_epsilon", 0.02))
+    tau_before = getattr(engine, "_calibrated_threshold", None)
+    calib = NPCalibrator(epsilon=eps)
+    if not calib.fit(normal_scores):
+        return {"ok": False, "n": int(np.size(normal_scores)),
+                "epsilon": eps, "tau": None, "tau_before": tau_before,
+                "error": f"校准样本不足 (需 ≥{_MIN_SAMPLES} 个有效分数)"}
+    engine._np_calibrator = calib
+    engine._calibrated_threshold = calib.threshold
+    engine._train_scores = [float(s) for s in normal_scores]
+    logger.info("NP重标定: n_cal=%d, eps=%.3f, tau %.4f → %.4f",
+                calib.n_samples, eps,
+                tau_before if tau_before is not None else float("nan"),
+                calib.threshold)
+    return {"ok": True, "n": calib.n_samples, "epsilon": eps,
+            "tau": calib.threshold, "tau_before": tau_before,
+            "error": None}

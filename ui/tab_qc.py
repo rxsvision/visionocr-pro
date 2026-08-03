@@ -25,6 +25,10 @@ from core.anomaly_bank import (
     register_ok_samples, run_anomaly_detection,
     list_banks_subspace, register_subspace_bank, run_subspace_detection,
 )
+from core.calibration_protocol import (
+    MIN_CAL_RECOMMENDED, format_report_md, recalibrate_product,
+)
+from core.fusion import calibrated_n_samples, fusion_stage
 
 _registry = None
 _config = None
@@ -171,6 +175,29 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                                             variant="secondary")
                 sa_status = gr.Markdown("")
 
+                gr.Markdown("---")
+                gr.Markdown("### 📐 校准协议 (NP 校准扩充, §6.2)")
+                gr.Markdown(
+                    "_建库后补采 **≥30 张独立 OK 图** (不得是建库图; "
+                    "建议变换光照/角度拍 3 组) 重标定 NP 阈值 → "
+                    "n_cal 达标后融合自动升级双源互证, 误报大降、漏检不变。_")
+                cal_product = gr.Dropdown(
+                    label="待校准产品 (须已建库)",
+                    choices=list_banks(),
+                )
+                cal_ok_upload = gr.File(
+                    label=f"上传校准 OK 图 (≥{MIN_CAL_RECOMMENDED} 张, 独立于建库图)",
+                    file_count="multiple",
+                    file_types=[".png", ".jpg", ".jpeg", ".bmp", ".tiff"],
+                )
+                cal_ng_upload = gr.File(
+                    label="(可选) NG 缺陷样本 — 用于 Recall 回归实测",
+                    file_count="multiple",
+                    file_types=[".png", ".jpg", ".jpeg", ".bmp", ".tiff"],
+                )
+                cal_run_btn = gr.Button("📐 执行校准协议", variant="secondary")
+                cal_status = gr.Markdown("")
+
         # ─── 右列: 全部输出/结果 ─────────────────────────────
         with gr.Column(scale=3):
             gr.Markdown("### 检测结果")
@@ -248,6 +275,11 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
         fn=_register_subspace_bank,
         inputs=[sa_product, sa_product_name, sa_ok_upload],
         outputs=[sa_status, sa_product],
+    )
+    cal_run_btn.click(
+        fn=_run_calibration,
+        inputs=[cal_product, cal_ok_upload, cal_ng_upload],
+        outputs=[cal_status],
     )
 
     # ─── 模式切换 → 工程师面板可见性 ─────────────────────────
@@ -355,7 +387,8 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
     # ─── Union 零漏检模式 (四源 OR: PatchCore + DINO + YOLO + DINOv2) ──
     if "Union" in (mode or ""):
-        yield _EMPTY[:6] + (log("▶ Union 零漏检 (PatchCore+DINO+YOLO+DINOv2 任一NG即NG)..."),)
+        yield _EMPTY[:6] + (log("▶ Union 零漏检 (PatchCore+DINO+YOLO+DINOv2 "
+                                "分阶段融合: 双源互证→NG, 单源孤证→REVIEW 黄牌)..."),)
         cfg = _get_config()
         product = "" if pc_product in ("(新建)", None) else (pc_product or "")
         result = run_union_detection(
@@ -418,6 +451,9 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
         if verdict == "OK":
             verdict_str = "✓ OK (合格)"
+        elif verdict == "REVIEW":
+            verdict_str = (f"◐ REVIEW 待人工复核 "
+                           f"(触发源: {'+'.join(sources)}; 单源孤证不自主判NG)")
         else:
             verdict_str = f"✗ NG (触发源: {'+'.join(sources)})"
 
@@ -436,8 +472,15 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         active = [s for s, r in (("PatchCore", pc), ("DINO", dino),
                                  ("YOLO", yolo), ("DINOv2", dv))
                   if r]
+        _fused = result.get("fusion", {})
+        if (_fused.get("mode") or "staged") == "or":
+            _finfo = "融合: 纯OR (v1.3.0)"
+        else:
+            _ncal = _fused.get("n_cal")
+            _finfo = (f"融合: 阶段{_fused.get('stage', '?')} "
+                      f"(n_cal={_ncal if _ncal is not None else '—'})")
         status = (f"Union 零漏检 · 产品: {product or '默认'} · "
-                  f"激活源: {'+'.join(active) or '无'}")
+                  f"激活源: {'+'.join(active) or '无'} · {_finfo}")
         yield (result.get("image"), verdict_str, f"{max_score:.2%}",
                str(len(detections)), table, status,
                log(f"✓ {verdict_str} · 最高分 {max_score:.2%}"))
@@ -757,6 +800,20 @@ def _register_bank(pc_product, pc_product_name, files):
                 f"  保存位置: {result.get('dinov2_saved_to', '')}")
     elif result.get("dinov2_error"):
         msg += f"\n- DINOv2 特征库: 建立失败 ({result['dinov2_error']}), 不影响 PatchCore"
+
+    # NP 校准状态 + 融合阶段提示 (§6.2 校准协议入口)
+    n_cals = [calibrated_n_samples(registry.get(n))
+              for n in ("anomalib", "dinov2_anomaly")]
+    n_cals = [n for n in n_cals if n]
+    if n_cals:
+        n_min = min(n_cals)
+        stage = fusion_stage(n_min, (_get_config().get("qc", {}) or {})
+                             .get("union", {}).get("fusion"))
+        msg += f"\n- NP 校准: n_cal={n_min} → 融合 Stage {stage}"
+        if stage < 2:
+            msg += (f"\n\n⚠ n_cal<10: 融合处于 Stage 1 (纯 OR, 误报偏高)。"
+                    f"请执行下方「校准协议」: 补采 ≥{MIN_CAL_RECOMMENDED} 张"
+                    f"独立 OK 图 (变换光照/角度), 升级双源互证降误报。")
     return msg, gr.update(choices=banks, value=product)
 
 
@@ -802,3 +859,36 @@ def _register_subspace_bank(sa_product, sa_product_name, files):
                 "检测结果显示\"仅供参考\", 须人工复核; "
                 "正式量产请补足 ≥10 张 OK 图并改用 PatchCore 主判。")
     return msg, gr.update(choices=banks, value=product)
+
+
+def _run_calibration(cal_product, cal_files, ng_files):
+    """执行校准协议 (§6.2): 独立校准图重标定 NP 阈值 + 验收报告。"""
+    if not cal_product or cal_product == "(新建)":
+        return "⚠ 请选择待校准的产品 (须已建库)。"
+
+    def _paths(files):
+        out = []
+        for f in (files or []):
+            p = f.name if hasattr(f, "name") else str(f)
+            if os.path.isfile(p):
+                out.append(p)
+        return out
+
+    cal_paths = _paths(cal_files)
+    if len(cal_paths) < 3:
+        return (f"⚠ 有效校准图仅 {len(cal_paths)} 张, 至少 3 张 "
+                f"(建议 ≥{MIN_CAL_RECOMMENDED} 张, 变换光照/角度拍 3 组)。")
+
+    registry = _registry
+    if registry is None:
+        return "⚠ 引擎未初始化。"
+
+    fusion_cfg = (_get_config().get("qc", {}) or {}).get(
+        "union", {}).get("fusion")
+    try:
+        result = recalibrate_product(
+            registry, cal_product, cal_paths,
+            ng_image_paths=_paths(ng_files), fusion_cfg=fusion_cfg)
+    except Exception as e:  # noqa: BLE001 — UI 兜底
+        return f"⚠ 校准协议执行异常: {e}"
+    return format_report_md(result)

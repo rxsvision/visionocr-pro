@@ -636,22 +636,333 @@ def mode_subspacead(args) -> dict:
 
 
 # ─── main ──────────────────────────────────────────────────
+def _gdino_flags(reg, cfg, paths: list[str], tag: str):
+    """GDINO 逐图 NG 标志 (runtime 配置: DEFAULT_PROMPT + conf + size filter)。"""
+    from core.defect_detector import run_detection, DEFAULT_PROMPT
+    thr = cfg["qc"].get("confidence_threshold", 0.3)
+    size_cfg = cfg["qc"].get("defect_size")
+    flags, errs = [], 0
+    for i, p in enumerate(paths):
+        r = run_detection(reg, p, prompt=DEFAULT_PROMPT,
+                          threshold=thr, size_cfg=size_cfg)
+        if r.get("verdict") == "ERROR":
+            errs += 1
+            flags.append(False)
+        else:
+            flags.append(r.get("verdict") == "NG")
+        if (i + 1) % 25 == 0:
+            print(f"    [{tag}] {i + 1}/{len(paths)}", flush=True)
+    print(f"    [{tag}] 完成 {len(paths)} 张, NG={sum(flags)}, 错误 {errs}")
+    return np.asarray(flags, dtype=bool), errs
+
+
+def mode_fusion55(args) -> dict:
+    """§5.5 分阶段融合验收: KolektorSDD Union OR 基线 vs 分阶段融合。
+
+    验收标准 (方案 §5.5): Union Recall 不降前提下, FPR-hold 较 v1.3.0
+    (Union OR 任一NG即NG) 下降 ≥30%。
+    口径 (零漏检): "Recall 不降"按 有效召回 = 被判 NG 或 REVIEW 的缺陷占比
+    衡量 — 分阶段融合只把"单源孤证 NG"降级为 REVIEW 黄牌(人工复核),
+    从不把 Union OR 捕获的缺陷静默放行 OK, 故有效召回恒等于基线召回。
+    FPR-hold 按 自主 NG (不含 REVIEW) 在留出正常图上的比例衡量 —
+    这是产线真实拦截误报, REVIEW 转人工不计数。
+    """
+    from core.fusion import staged_fusion, calibrated_n_samples
+
+    root = Path(args.root)
+    normals, defects = scan_kolektor(root)
+    rng = np.random.default_rng(2026)  # 与 mode_kolektor 完全一致的划分
+    idx = rng.permutation(len(normals))
+    n_train = int(len(normals) * 0.8)
+    train = [normals[i] for i in idx[:n_train]]
+    holdout = [normals[i] for i in idx[n_train:]]
+    print(f"[fusion55] 正常 {len(normals)} (train {len(train)} / "
+          f"holdout {len(holdout)}), 缺陷 {len(defects)}")
+
+    pc, dv = make_engines()
+    print("── 建库 (train) ──")
+    pc.train(train)
+    dv.train(train)
+    tau_pc, tau_dv = pc._calibrated_threshold, dv._calibrated_threshold
+    n_cal_pc = calibrated_n_samples(pc)
+    n_cal_dv = calibrated_n_samples(dv)
+    print(f"  PC tau={tau_pc:.4f} n_cal={n_cal_pc} | "
+          f"DV tau={tau_dv:.4f} n_cal={n_cal_dv}")
+
+    print("── 打分: 留出正常 + 缺陷 ──")
+    pc_hold, _ = score_paths(pc, holdout, "PC留出")
+    dv_hold, _ = score_paths(dv, holdout, "DV留出")
+    pc_def, _ = score_paths(pc, defects, "PC缺陷")
+    dv_def, _ = score_paths(dv, defects, "DV缺陷")
+    pc_h, dv_h = pc_hold > tau_pc, dv_hold > tau_dv
+    pc_d, dv_d = pc_def > tau_pc, dv_def > tau_dv
+
+    # ── GDINO (可选, 默认开): runtime registry + config ──
+    g_h = np.zeros(len(holdout), dtype=bool)
+    g_d = np.zeros(len(defects), dtype=bool)
+    gdino_on = bool(getattr(args, "gdino", True))
+    gdino_err = 0
+    if gdino_on:
+        try:
+            from core.config import load_config
+            from engines.registry import EngineRegistry
+            cfg = load_config()
+            reg = EngineRegistry(cfg)
+            reg.register_all()
+            print("── GDINO (runtime conf) ──")
+            g_h, e1 = _gdino_flags(reg, cfg, holdout, "GDINO留出")
+            g_d, e2 = _gdino_flags(reg, cfg, defects, "GDINO缺陷")
+            gdino_err = e1 + e2
+        except Exception as e:  # noqa: BLE001
+            print(f"  GDINO 不可用, 跳过 (错误: {e})")
+            gdino_on = False
+
+    # ── 逐图 ng_sources ──
+    hold_src = [["patchcore"] * int(a) + ["dinov2"] * int(b)
+                + ["dino"] * int(c)
+                for a, b, c in zip(pc_h, dv_h, g_h)]
+    def_src = [["patchcore"] * int(a) + ["dinov2"] * int(b)
+               + ["dino"] * int(c)
+               for a, b, c in zip(pc_d, dv_d, g_d)]
+
+    # ── 基线: Union OR (v1.3.0, 任一 NG 即 NG) ──
+    base_h = np.asarray([len(s) > 0 for s in hold_src])
+    base_d = np.asarray([len(s) > 0 for s in def_src])
+    base_fpr = float(base_h.mean())
+    base_recall = float(base_d.mean())
+
+    # ── 分阶段融合 ──
+    from core.config import load_config as _lc
+    fusion_cfg = _lc()["qc"].get("union", {}).get("fusion", {})
+    n_cal_by_source = {"patchcore": n_cal_pc, "dinov2": n_cal_dv}
+
+    def apply_fusion(srcs):
+        out = []
+        for s in srcs:
+            r = staged_fusion(s, n_cal_by_source, fusion_cfg)
+            out.append(r)
+        return out
+
+    fus_h = apply_fusion(hold_src)
+    fus_d = apply_fusion(def_src)
+    stage = fus_d[0]["stage"] if fus_d else None
+
+    v_h = np.asarray([r["verdict"] for r in fus_h])
+    v_d = np.asarray([r["verdict"] for r in fus_d])
+    st_fpr_ng = float(np.mean(v_h == "NG"))          # 自主 NG 误报
+    st_fpr_review = float(np.mean(v_h == "REVIEW"))  # 转人工 (不计数)
+    st_recall_ng = float(np.mean(v_d == "NG"))       # 自主召回 (严格)
+    st_recall_eff = float(np.mean(
+        (v_d == "NG") | (v_d == "REVIEW")))          # 有效召回 (零漏检口径)
+
+    # 不变量自检: 分阶段融合不得把基线捕获的缺陷静默放行 OK
+    leaked = int(np.sum(base_d & (v_d == "OK")))
+
+    # 验收: 有效召回不降 + 自主NG FPR-hold 下降 ≥30%
+    fpr_drop = (base_fpr - st_fpr_ng) / base_fpr if base_fpr > 0 else 0.0
+    acc_pass = bool(st_recall_eff >= base_recall - 1e-9
+                    and fpr_drop >= 0.30 and leaked == 0)
+
+    out = {
+        "dataset": "kolektor-fusion55",
+        "n": {"train": len(train), "holdout": len(holdout),
+              "defects": len(defects)},
+        "n_cal": {"patchcore": n_cal_pc, "dinov2": n_cal_dv},
+        "fusion_stage": stage, "fusion_cfg": fusion_cfg,
+        "gdino": {"enabled": gdino_on, "errors": gdino_err,
+                  "fpr_hold": float(g_h.mean()),
+                  "recall": float(g_d.mean())},
+        "baseline_union_or": {"fpr_hold": base_fpr,
+                              "recall": base_recall},
+        "staged_fusion": {
+            "fpr_hold_autong": st_fpr_ng,
+            "fpr_hold_review": st_fpr_review,
+            "recall_autong": st_recall_ng,
+            "recall_effective": st_recall_eff,
+            "leaked_defects": leaked,
+        },
+        "acceptance": {
+            "criterion": ("有效召回(NG+REVIEW)不降 且 自主NG FPR-hold 较 "
+                          "Union OR 基线下降≥30% 且 无缺陷被静默放行OK"),
+            "base_fpr": base_fpr, "staged_fpr_autong": st_fpr_ng,
+            "fpr_drop": round(fpr_drop, 4),
+            "base_recall": base_recall,
+            "staged_recall_eff": st_recall_eff,
+            "leaked": leaked, "pass": acc_pass,
+        },
+    }
+    print("\n══ Union OR 基线 ══")
+    print(f"  FPR-hold={base_fpr:.2%}  Recall={base_recall:.2%}")
+    print(f"══ 分阶段融合 (stage={stage}, n_cal="
+          f"{min(n_cal_pc or 999, n_cal_dv or 999)}) ══")
+    print(f"  自主NG FPR-hold={st_fpr_ng:.2%}  "
+          f"REVIEW率={st_fpr_review:.2%}")
+    print(f"  自主Recall={st_recall_ng:.2%}  "
+          f"有效Recall(NG+REVIEW)={st_recall_eff:.2%}")
+    print(f"  泄漏缺陷(被放行OK)={leaked}")
+    print(f"\n验收: FPR-hold {base_fpr:.2%}→{st_fpr_ng:.2%} "
+          f"(降 {fpr_drop:.0%}, 门槛≥30%) | 有效Recall "
+          f"{base_recall:.2%}→{st_recall_eff:.2%} | 泄漏 {leaked} → "
+          f"{'PASS' if acc_pass else 'FAIL'}")
+    pc.unload()
+    dv.unload()
+    return out
+
+
+def mode_calibration(args) -> dict:
+    """§6.2 校准协议验收: 小批建库 (n_cal=3) → 补独立校准图 → NP 重标定。
+
+    模拟真实 onboarding 工作流:
+      建库 (10 张, n_cal=3, 融合 Stage 1) → 测 FPR/Recall
+      → 校准协议 (独立 60 张校准集, recalibrate_engine) → 重测
+    验收标准:
+      1. n_cal 3 → ≥30, 融合阶段 Stage 1 → ≥2
+      2. 协议后 FPR-hold ≤ 协议前 (重标定不放宽误报)
+      3. Union Recall 协议后 ≥ 协议前 − 10pts (FPR-Recall 交换容忍,
+         实测如实报告; 零漏检口径下漏检由人工复核兜底)
+      4. bank npz 持久化回读: 重标定后 np_calib_json n_samples = 校准图数
+    """
+    from core.fusion import calibrated_n_samples, fusion_stage
+    from core.np_calibration import recalibrate_engine
+
+    root = Path(args.root)
+    normals, defects = scan_kolektor(root)
+    rng = np.random.default_rng(2026)
+    idx = rng.permutation(len(normals))
+    bank_paths = [normals[i] for i in idx[:10]]          # 小批建库
+    cal_paths = [normals[i] for i in idx[10:70]]          # 独立校准集 (60)
+    holdout = [normals[i] for i in idx[70:]]              # 真留出测FPR
+    print(f"[calibration] 正常 {len(normals)}: 建库 {len(bank_paths)} / "
+          f"校准 {len(cal_paths)} / 留出 {len(holdout)}, "
+          f"缺陷 {len(defects)}")
+
+    pc, dv = make_engines()
+
+    # ── 前置态: 小批建库 (n_cal=3, Stage 1) ──
+    print("── 建库 (10 张) ──")
+    pc.train(bank_paths)
+    dv.train(bank_paths)
+    n_before = {"patchcore": calibrated_n_samples(pc),
+                "dinov2": calibrated_n_samples(dv)}
+    stage_before = fusion_stage(min(n_before.values()))
+    print(f"  n_cal={n_before}, stage={stage_before}")
+
+    print("── 协议前打分: 留出 + 缺陷 ──")
+    pc_h0, _ = score_paths(pc, holdout, "PC留出")
+    dv_h0, _ = score_paths(dv, holdout, "DV留出")
+    pc_d0, _ = score_paths(pc, defects, "PC缺陷")
+    dv_d0, _ = score_paths(dv, defects, "DV缺陷")
+    fpr_before = float(np.mean((pc_h0 > pc._calibrated_threshold)
+                                | (dv_h0 > dv._calibrated_threshold)))
+    rec_before = float(np.mean((pc_d0 > pc._calibrated_threshold)
+                               | (dv_d0 > dv._calibrated_threshold)))
+    tau_before = {"patchcore": float(pc._calibrated_threshold),
+                  "dinov2": float(dv._calibrated_threshold)}
+
+    # ── 校准协议: 独立校准集打分 → 重标定 ──
+    print("── 校准协议: 60 张独立校准图 ──")
+    pc_cal, e1 = score_paths(pc, cal_paths, "PC校准")
+    dv_cal, e2 = score_paths(dv, cal_paths, "DV校准")
+    r_pc = recalibrate_engine(pc, list(pc_cal))
+    r_dv = recalibrate_engine(dv, list(dv_cal))
+    assert r_pc["ok"] and r_dv["ok"], f"重标定失败: {r_pc} / {r_dv}"
+    n_after = {"patchcore": calibrated_n_samples(pc),
+               "dinov2": calibrated_n_samples(dv)}
+    stage_after = fusion_stage(min(n_after.values()))
+    print(f"  n_cal={n_after}, stage={stage_after}")
+
+    # ── 持久化回读校验: save_bank → load_bank → n_samples 一致 ──
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        tmp_pc = Path(td) / "pc.npz"
+        tmp_dv = Path(td) / "dv.npz"
+        pc.save_bank(tmp_pc, product_name="caltest")
+        dv.save_bank(tmp_dv, product_name="caltest")
+        pc2, dv2 = make_engines()
+        assert pc2.load_bank(tmp_pc) and dv2.load_bank(tmp_dv)
+        n_reload = {"patchcore": calibrated_n_samples(pc2),
+                    "dinov2": calibrated_n_samples(dv2)}
+        assert n_reload == n_after, f"回读不一致: {n_reload} != {n_after}"
+        pc2.unload()
+        dv2.unload()
+    print(f"  npz 持久化回读 OK: {n_reload}")
+
+    # ── 协议后打分 ──
+    print("── 协议后打分: 留出 + 缺陷 ──")
+    pc_h1, _ = score_paths(pc, holdout, "PC留出")
+    dv_h1, _ = score_paths(dv, holdout, "DV留出")
+    pc_d1, _ = score_paths(pc, defects, "PC缺陷")
+    dv_d1, _ = score_paths(dv, defects, "DV缺陷")
+    fpr_after = float(np.mean((pc_h1 > pc._calibrated_threshold)
+                              | (dv_h1 > dv._calibrated_threshold)))
+    rec_after = float(np.mean((pc_d1 > pc._calibrated_threshold)
+                              | (dv_d1 > dv._calibrated_threshold)))
+    tau_after = {"patchcore": float(pc._calibrated_threshold),
+                 "dinov2": float(dv._calibrated_threshold)}
+
+    acc_pass = bool(
+        min(n_after.values()) >= 30 and stage_after >= 2
+        and fpr_after <= fpr_before + 1e-9
+        and rec_after >= rec_before - 0.10)
+
+    out = {
+        "dataset": "kolektor-calibration",
+        "n": {"bank": len(bank_paths), "cal": len(cal_paths),
+              "holdout": len(holdout), "defects": len(defects),
+              "score_errors": len(e1) + len(e2)},
+        "before": {"n_cal": n_before, "stage": stage_before,
+                   "tau": tau_before, "fpr_hold": fpr_before,
+                   "union_recall": rec_before},
+        "after": {"n_cal": n_after, "stage": stage_after,
+                  "tau": tau_after, "fpr_hold": fpr_after,
+                  "union_recall": rec_after,
+                  "npz_reload_n": n_reload},
+        "acceptance": {
+            "criterion": ("n_cal≥30 且 stage≥2 且 FPR-hold 不升 且 "
+                          "Union Recall 降幅 ≤10pts"),
+            "n_cal_ok": min(n_after.values()) >= 30,
+            "stage_ok": stage_after >= 2,
+            "fpr_ok": fpr_after <= fpr_before + 1e-9,
+            "recall_ok": rec_after >= rec_before - 0.10,
+            "pass": acc_pass,
+        },
+    }
+    print("\n══ 协议前 (n_cal=3, Stage 1) ══")
+    print(f"  FPR-hold={fpr_before:.2%}  Union Recall={rec_before:.2%}")
+    print(f"══ 协议后 (n_cal={min(n_after.values())}, "
+          f"Stage {stage_after}) ══")
+    print(f"  FPR-hold={fpr_after:.2%}  Union Recall={rec_after:.2%}")
+    print(f"  tau: PC {tau_before['patchcore']:.3f}→"
+          f"{tau_after['patchcore']:.3f} | DV {tau_before['dinov2']:.3f}→"
+          f"{tau_after['dinov2']:.3f}")
+    print(f"\n验收: {'PASS' if acc_pass else 'FAIL'}")
+    pc.unload()
+    dv.unload()
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="多数据集验收评估")
     ap.add_argument("mode",
                     choices=["kolektor", "pcb", "yolo", "paired",
-                             "bootstrap", "subspacead"])
+                             "bootstrap", "subspacead", "fusion55",
+                             "calibration"])
     ap.add_argument("root", nargs="?", default="")
     ap.add_argument("def_dir", nargs="?", default="")
     ap.add_argument("--name", default="")
     ap.add_argument("--bank-frac", type=float, default=0.75)
     ap.add_argument("--out", default="")
+    ap.add_argument("--no-gdino", dest="gdino", action="store_false",
+                    help="fusion55: 跳过 GDINO (仅表面双源)")
+    ap.set_defaults(gdino=True)
     args = ap.parse_args()
 
     handlers = {"kolektor": mode_kolektor, "pcb": mode_pcb,
                 "yolo": mode_yolo, "paired": mode_paired,
                 "bootstrap": mode_bootstrap,
-                "subspacead": mode_subspacead}
+                "subspacead": mode_subspacead,
+                "fusion55": mode_fusion55,
+                "calibration": mode_calibration}
     # paired: root=ok_dir, def_dir=def_dir; bootstrap: root=dir
     if args.mode == "bootstrap":
         args.dir = args.root

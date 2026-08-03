@@ -20,6 +20,8 @@ from typing import Optional
 
 import numpy as np
 
+from core.fusion import (calibrated_n_samples, get_drift_monitor,
+                         staged_fusion)
 from core.imutils import imread_unicode
 
 logger = logging.getLogger("visionocr.defect")
@@ -538,7 +540,7 @@ def run_union_detection(registry, image_path: str,
         elif dv_result.get("pred_label") == "NG":
             ng_sources.append("dinov2")
 
-    # ── 3) Union OR 判定 ──
+    # ── 3) 分阶段融合判定 (v1.4.0 §5.5; qc.union.fusion.mode=or 回退纯OR) ──
     # 安全守卫: 如果所有引擎都被跳过, 警告用户 OK 不可信
     _any_participated = (pc_result is not None or
                          dino_result is not None or
@@ -550,7 +552,40 @@ def run_union_detection(registry, image_path: str,
             "请确认: (1) 已选择产品 (2) 已建 OK 样本特征库 "
             "(3) GroundingDINO prompt 非空")
 
-    verdict = "NG" if ng_sources else "OK"
+    # 各校准源的 NP 校准样本数 (决定融合阶段; 未参与/未拟合 → None)
+    n_cal_by_source = {
+        "patchcore": (calibrated_n_samples(pc_engine)
+                      if pc_result is not None else None),
+        "dinov2": (calibrated_n_samples(dv_engine)
+                   if dv_result is not None else None),
+    }
+    fusion_cfg = union_cfg.get("fusion", {})
+    fused = staged_fusion(ng_sources, n_cal_by_source, fusion_cfg)
+    verdict = fused["verdict"]
+    if verdict == "REVIEW":
+        logger.info("Union: REVIEW 黄牌待复核 (%s)",
+                    "; ".join(fused["review_reasons"]) or "单源孤证")
+    if fused.get("fallback_or"):
+        logger.info("Union: 融合回退 OR (%s)",
+                    "; ".join(fused["review_reasons"]))
+
+    # Stage 3 漂移监控: 对每张图观测校准分数 (不只 NG 图), 仅预警不改判决
+    if fused["stage"] == 3:
+        _mon = get_drift_monitor()
+        for _src, _res, _eng in (("patchcore", pc_result, pc_engine),
+                                 ("dinov2", dv_result, dv_engine)):
+            if _res is None or _eng is None:
+                continue
+            _cal = getattr(_eng, "_np_calibrator", None)
+            if _cal is None or not getattr(_cal, "is_fitted", False):
+                continue
+            _warn = _mon.observe(
+                f"{product_name or '默认'}/{_src}",
+                float(_res.get("score", 0.0)),
+                float(_cal.threshold),
+                float(getattr(_cal, "epsilon", 0.10)))
+            if _warn:
+                logger.warning("Union 漂移监控: %s", _warn)
 
     # ── 4) 合成标注图 ──
     annotated = img.copy()
@@ -605,6 +640,15 @@ def run_union_detection(registry, image_path: str,
         # 融合热力图 (全分辨率 float32, 无表面源时为 None) —
         # 供 VLM ROI 裁切等下游定位使用
         "anomaly_map": merged_map,
+        # 分阶段融合元数据 (v1.4.0 §5.5)
+        "fusion": {
+            "stage": fused["stage"],
+            "mode": fused["mode"],
+            "n_cal": fused["n_cal"],
+            "review_required": fused["review_required"],
+            "review_reasons": fused["review_reasons"],
+            "fallback_or": fused["fallback_or"],
+        },
     }
 
     if pc_result:
@@ -658,7 +702,7 @@ def draw_verdict_badge(img: np.ndarray, verdict: str, count: int = 0,
 
     Args:
         img:     BGR 图像 (会被原地修改)。
-        verdict: "OK" 或 "NG"。
+        verdict: "OK" / "NG" / "REVIEW" (黄牌待复核, v1.4.0 分阶段融合)。
         count:   缺陷数量 (NG 时显示)。
         alpha:   印章背景不透明度。
 
@@ -673,7 +717,13 @@ def draw_verdict_badge(img: np.ndarray, verdict: str, count: int = 0,
     font_scale = badge_h / 55.0
     thickness_txt = max(3, int(font_scale * 2.5))
 
-    if "OK" in verdict.upper() and "NG" not in verdict.upper():
+    _v = verdict.upper()
+    if "REVIEW" in _v:
+        # 黄牌: 单源孤证等可疑图 — 非 NG 拦截, 强制人工复核 (ASCII 避免
+        # cv2.putText 中文乱码)
+        text = "REVIEW"
+        bg_color = (0, 200, 255)     # BGR 黄橙 (黄牌)
+    elif "OK" in _v and "NG" not in _v:
         text = "OK"
         bg_color = (0, 180, 0)       # BGR 绿
     else:

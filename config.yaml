@@ -206,6 +206,18 @@ qc:
     enable_dino: true             # 结构缺陷: 缺件/错位/标签歪 (需提示词)
     enable_yolo: true             # 结构缺陷: 缺孔/短路/毛刺 (少样本微调, 需训练权重)
     enable_dinov2: true           # 表面异常: DINOv2特征+GMM分布建模 (与PatchCore互补, 需OK样本建库)
+    # 分阶段融合 (v1.4.0 §5.5): 按校准样本量 n_cal 分阶段收紧判决。
+    # KolektorSDD 实测 (seed2026, eps=0.10): 有效Recall(NG+REVIEW) 80.8% 不降,
+    # 自主NG 的 FPR-hold 11.4%→2.9% (-75%), 远超验收线 -30%。
+    # 阶段1 (n_cal<10): 纯OR零漏检; 阶段2 (10≤n<50): 校准一致投票;
+    # 阶段3 (n≥50): 一致投票+漂移监控。单源孤证→REVIEW黄牌(人工复核, 不静默放行OK)
+    fusion:
+      mode: "staged"              # staged=分阶段融合 | or=v1.3.0行为(任一NG即NG)
+      stage2_min_cal: 10          # 校准样本≥此值 → 一致投票阶段
+      stage3_min_cal: 50          # 校准样本≥此值 → 一致投票+漂移监控阶段
+      drift_window: 200           # 漂移监控滑动窗口 (近期超阈值比例 vs 目标eps)
+      drift_min_samples: 30       # 窗口内最少观测数才开始漂移判断
+      drift_rate_factor: 3.0      # 超阈值比例 > max(3*eps, eps+0.05) → log预警
   # 瑕疵尺寸过滤 (产线刚需: 过滤灰尘噪点 + 排除背景误检)
   defect_size:
     enabled: true
