@@ -25,6 +25,13 @@ def list_banks() -> list[str]:
     return sorted(p.stem for p in _BANKS_DIR.glob("*.npz"))
 
 
+def list_banks_dinov2() -> list[str]:
+    """列出所有已建库的 DINOv2 特征库产品名。"""
+    if not _BANKS_DV_DIR.exists():
+        return []
+    return sorted(p.stem for p in _BANKS_DV_DIR.glob("*.npz"))
+
+
 def bank_path(product_name: str) -> Path:
     """获取产品特征库文件路径。"""
     return _BANKS_DIR / f"{product_name}.npz"

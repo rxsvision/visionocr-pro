@@ -415,9 +415,23 @@ def run_union_detection(registry, image_path: str,
             if not engine.is_ready():
                 registry.ensure_loaded("anomalib")
             # 自动加载产品特征库 (持久化 bank 在 Union 模式下直接生效)
-            if engine.is_ready() and not engine.has_bank and product_name:
-                from core.anomaly_bank import load_product_bank
-                load_product_bank(registry, product_name)
+            if engine.is_ready() and not engine.has_bank:
+                from core.anomaly_bank import (load_product_bank,
+                                               list_banks)
+                if product_name:
+                    load_product_bank(registry, product_name)
+                else:
+                    # 无产品上下文时, 尝试自动发现唯一特征库
+                    available = list_banks()
+                    if len(available) == 1:
+                        logger.info("Union: PatchCore 自动加载唯一特征库「%s」",
+                                    available[0])
+                        load_product_bank(registry, available[0])
+                    elif len(available) > 1:
+                        logger.warning(
+                            "Union: PatchCore 存在 %d 个特征库 [%s], "
+                            "无法自动选择, 请在工程师面板指定产品",
+                            len(available), ", ".join(available))
             if engine.is_ready() and engine.has_bank:
                 kwargs = {}
                 if threshold is not None:
@@ -469,9 +483,23 @@ def run_union_detection(registry, image_path: str,
         if dv_eng is not None:
             if not dv_eng.is_ready():
                 registry.ensure_loaded("dinov2_anomaly")
-            if dv_eng.is_ready() and not dv_eng.has_bank and product_name:
-                from core.anomaly_bank import load_product_bank_dinov2
-                load_product_bank_dinov2(registry, product_name)
+            if dv_eng.is_ready() and not dv_eng.has_bank:
+                from core.anomaly_bank import (load_product_bank_dinov2,
+                                               list_banks_dinov2)
+                if product_name:
+                    load_product_bank_dinov2(registry, product_name)
+                else:
+                    # 无产品上下文时, 尝试自动发现唯一 DINOv2 特征库
+                    available_dv = list_banks_dinov2()
+                    if len(available_dv) == 1:
+                        logger.info("Union: DINOv2 自动加载唯一特征库「%s」",
+                                    available_dv[0])
+                        load_product_bank_dinov2(registry, available_dv[0])
+                    elif len(available_dv) > 1:
+                        logger.warning(
+                            "Union: DINOv2 存在 %d 个特征库 [%s], "
+                            "无法自动选择, 请在工程师面板指定产品",
+                            len(available_dv), ", ".join(available_dv))
             if dv_eng.is_ready() and dv_eng.has_bank:
                 dv_kwargs = {}
                 if threshold is not None:
@@ -487,6 +515,17 @@ def run_union_detection(registry, image_path: str,
                 logger.debug("Union: DINOv2 跳过 (未就绪或无特征库)")
 
     # ── 3) Union OR 判定 ──
+    # 安全守卫: 如果所有引擎都被跳过, 警告用户 OK 不可信
+    _any_participated = (pc_result is not None or
+                         dino_result is not None or
+                         yolo_result is not None or
+                         dv_result is not None)
+    if not _any_participated and not ng_sources:
+        logger.warning(
+            "Union: 所有检测引擎均被跳过, verdict=OK 不可信! "
+            "请确认: (1) 已选择产品 (2) 已建 OK 样本特征库 "
+            "(3) GroundingDINO prompt 非空")
+
     verdict = "NG" if ng_sources else "OK"
 
     # ── 4) 合成标注图 ──
