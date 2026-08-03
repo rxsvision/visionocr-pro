@@ -560,7 +560,8 @@ class SubspaceADEngine(BaseEngine):
             logger.warning("SubspaceAD 特征库不存在: %s", path)
             return False
         try:
-            data = np.load(str(path), allow_pickle=True)
+            from core.npz_io import load_npz_safe
+            data = load_npz_safe(path, allow_legacy_pickle=True)
             self._sub_mu = data["sub_mu"].astype(np.float32)
             self._sub_components = data["sub_components"].astype(np.float32)
             self._sub_eigvals = data["sub_eigvals"].astype(np.float32) \

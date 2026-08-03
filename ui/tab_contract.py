@@ -27,7 +27,7 @@ from core.payment_store import (
     list_contracts, check_reminders, log_error, list_errors,
     list_pending_review, get_contract_detail,
     update_contract_fields, update_receivable_fields,
-    mark_reviewed, reject_contract,
+    mark_reviewed, reject_contract, structurally_valid,
     upsert_signer, list_signers, delete_signer, outstanding_by_signer,
     save_risk_alerts, list_risk_alerts, list_contracts_with_risks,
     dashboard_kpi, monthly_trend, overdue_ranking, filter_contracts,
@@ -348,6 +348,21 @@ def _extract_contracts(files):
                         total_items, tiers_used, statuses)
                     continue
 
+                # 上传大小限制 (防超大文件耗尽磁盘/内存, v1.5.0)
+                max_mb = float(cfg.get("contracts", {}).get("max_upload_mb", 50))
+                size_mb = os.path.getsize(path) / (1024 * 1024)
+                if size_mb > max_mb:
+                    statuses.append(f"⚠ 跳过(超出大小限制 {max_mb:.0f}MB): "
+                                    f"{name} ({size_mb:.1f}MB)")
+                    fail_count += 1
+                    log_error(conn, "read", "FILE_TOO_LARGE",
+                              f"文件超过 {max_mb:.0f}MB 限制: {size_mb:.1f}MB",
+                              file_path=path)
+                    yield _refresh_table(), _progress_summary(
+                        idx, total_files, ok_count, dup_count, fail_count,
+                        total_items, tiers_used, statuses)
+                    continue
+
                 # 重复检测: SHA-256 内容哈希
                 sha = compute_sha256(path)
                 existing = check_duplicate(conn, sha)
@@ -558,21 +573,35 @@ def _reject_review(contract_id) -> tuple[str, list[list]]:
 
 
 def _batch_approve(threshold: float) -> tuple[str, list[list]]:
-    """批量通过: 将所有置信度 >= threshold 的待复核合同标记为已复核。"""
+    """批量通过: 置信度 >= threshold 且结构化校验通过的待复核合同标记为已复核。"""
     cfg = _get_config()
     conn = get_conn(cfg.get("data_dir", "data"))
     rows = list_pending_review(conn)
     approved = []
+    blocked = []
     for r in rows:
-        if (r.get("confidence") or 0) >= threshold:
-            mark_reviewed(conn, r["id"])
+        if (r.get("confidence") or 0) < threshold:
+            continue
+        if not structurally_valid(r):
+            # 高置信但勾稽未过 (如 LLM 自报高分但金额不一致) → 拒绝静默通过
             title = r.get("title") or os.path.basename(r.get("file_path") or "")
-            approved.append(f"#{r['id']} {title} ({r.get('confidence', 0):.0%})")
+            blocked.append(f"#{r['id']} {title} (校验未通过, 请人工复核)")
+            continue
+        mark_reviewed(conn, r["id"])
+        title = r.get("title") or os.path.basename(r.get("file_path") or "")
+        approved.append(f"#{r['id']} {title} ({r.get('confidence', 0):.0%})")
     conn.close()
+    parts = []
     if approved:
-        msg = f"✓ 批量通过 {len(approved)} 份合同 (阈值 {threshold:.0%}):\n\n" + "\n".join(approved)
-    else:
+        parts.append(f"✓ 批量通过 {len(approved)} 份合同 (阈值 {threshold:.0%}):\n\n"
+                     + "\n".join(approved))
+    if blocked:
+        parts.append(f"⚠ {len(blocked)} 份高置信但校验未通过, 已拦截待人工复核:\n\n"
+                     + "\n".join(blocked))
+    if not parts:
         msg = f"无符合条件的合同 (阈值 {threshold:.0%}, 待复核 {len(rows)} 份均低于阈值)。"
+    else:
+        msg = "\n\n".join(parts)
     return msg, _refresh_review_list()
 
 

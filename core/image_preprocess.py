@@ -186,8 +186,8 @@ def check_image_quality(image_path: str) -> dict:
         warnings.append(f"图像过曝 (均值 {mean_val:.0f}), 建议降低曝光")
 
     return {
-        "blur": is_blur,
-        "blur_score": round(lap_var, 1),
+        "blur": bool(is_blur),
+        "blur_score": round(float(lap_var), 1),
         "exposure": exposure,
         "ok": len(warnings) == 0,
         "warning": "; ".join(warnings),

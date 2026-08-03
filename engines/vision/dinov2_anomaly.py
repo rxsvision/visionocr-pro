@@ -539,7 +539,8 @@ class DINOv2AnomalyEngine(BaseEngine):
         try:
             from sklearn.decomposition import PCA
             from sklearn.mixture import GaussianMixture
-            data = np.load(str(path), allow_pickle=True)
+            from core.npz_io import load_npz_safe
+            data = load_npz_safe(path, allow_legacy_pickle=True)
 
             pca = PCA(n_components=int(data["pca_components"].shape[0]),
                       whiten=True)  # whiten 必须与训练时一致, 否则分数漂移

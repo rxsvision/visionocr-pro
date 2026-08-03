@@ -323,7 +323,8 @@ class AnomalibEngine(BaseEngine):
             logger.warning("记忆库文件不存在: %s", path)
             return False
         try:
-            data = np.load(str(path), allow_pickle=True)
+            from core.npz_io import load_npz_safe
+            data = load_npz_safe(path, allow_legacy_pickle=True)
             self._memory_bank = data["bank"]
             self._bank_meta = {
                 k.replace("meta_", ""): data[k].item()

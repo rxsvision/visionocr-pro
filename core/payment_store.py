@@ -303,11 +303,29 @@ def list_errors(conn: sqlite3.Connection, limit: int = 50,
 
 
 # ─── 人工复核门控 ────────────────────────────────────────────
+def structurally_valid(row: dict) -> bool:
+    """结构化数据勾稽校验 (不单独信任置信度, v1.5.0 信任链加固)。
+
+    优先读抽取时落库的 valid 标记 (金额勾稽/JSON 校验结果);
+    旧数据无此字段时, 回退要求至少抽到合同总金额。
+    """
+    import json as _json
+    sj = row.get("structured_json")
+    if sj:
+        try:
+            data = _json.loads(sj)
+            if "valid" in data:
+                return bool(data["valid"])
+        except (ValueError, TypeError):
+            pass
+    return (row.get("total_amount") or 0) > 0
+
+
 def list_pending_review(conn: sqlite3.Connection) -> list[dict]:
     """列出所有待复核合同 (reviewed=0), 按置信度升序 (低的排前面)。"""
     sql = """SELECT id, file_path, contract_no, title, our_party, counterparty,
                     signer, total_amount, currency, direction,
-                    confidence, extract_source, created_at
+                    confidence, extract_source, structured_json, created_at
              FROM contracts WHERE reviewed = 0
              ORDER BY confidence ASC, id DESC"""
     return [dict(r) for r in conn.execute(sql).fetchall()]

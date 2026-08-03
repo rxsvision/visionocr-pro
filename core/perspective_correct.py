@@ -208,10 +208,10 @@ def _detect_skew_angle(img: np.ndarray) -> Optional[float]:
     if lines is None or len(lines) < 3:
         return None
 
-    # 统计所有线段角度
+    # 统计所有线段角度 (reshape 兼容新旧 OpenCV 返回形状)
     angles = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
+    for line in lines.reshape(-1, 4):
+        x1, y1, x2, y2 = [int(v) for v in line]
         if x2 - x1 == 0:
             continue
         angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
