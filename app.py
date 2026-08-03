@@ -177,6 +177,7 @@ def main():
         registry = EngineRegistry(cfg)
         registry.register_all()
         _log_engine_health(registry)
+        atexit.register(registry.shutdown)  # 进程退出卸载全部引擎 (含常驻容器)
     except Exception as e:
         logger.critical("引擎注册失败: %s", e)
         _fatal_exit("引擎注册失败", str(e))

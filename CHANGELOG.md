@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **进程退出引擎残留**: `registry.shutdown()` 原仅停空闲卸载线程、且 `app.py` 从未注册它 → PP-OCRv6 常驻容器（`--restart unless-stopped`）在应用退出乃至系统重启后仍残留运行；现 shutdown 卸载全部已加载引擎（常驻豁免仅限运行期，退出时仍释放），`app.py` 经 atexit 注册
 - **特征库自动发现**: 重启后无产品上下文时 PatchCore/DINOv2 特征库不加载 → 缺陷全部判 OK 的严重问题；唯一 bank 自动加载、多 bank 明确告警；所有检测源被跳过时 verdict=OK 不可信告警
 - **onnxruntime-gpu 安装残缺**: CPU/GPU 包共存导致共享文件损坏（`no attribute '__version__'`），以 `--force-reinstall --no-deps onnxruntime-gpu==1.28.0` 修复并验证 CUDA/TensorRT provider 可用
 

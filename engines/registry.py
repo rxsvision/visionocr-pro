@@ -201,8 +201,18 @@ class EngineRegistry:
                             logger.warning("空闲卸载 %s 失败: %s", name, e)
 
     def shutdown(self):
-        """停止空闲卸载后台线程 (进程退出时由 daemon 兜底)。"""
+        """停止空闲卸载线程并卸载所有已加载引擎 (进程退出清理)。
+
+        常驻引擎也在此卸载 — 常驻豁免的是"运行期"驱逐/空闲卸载,
+        进程退出时仍应释放资源 (如 PP-OCRv6 常驻容器)。
+        """
         self._stop_idle.set()
+        for name, eng in list(self._engines.items()):
+            if eng.is_ready():
+                try:
+                    eng.unload()
+                except Exception as e:
+                    logger.warning("退出卸载 %s 失败: %s", name, e)
 
     def _used_vram(self) -> float:
         return sum(
