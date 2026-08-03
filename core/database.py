@@ -199,10 +199,19 @@ CREATE TABLE IF NOT EXISTS behavior_events (
 _SCHEMA_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_receivables_contract ON receivables(contract_id);
 CREATE INDEX IF NOT EXISTS idx_receivables_status ON receivables(status);
+CREATE INDEX IF NOT EXISTS idx_receivables_due_date ON receivables(due_date);
 CREATE INDEX IF NOT EXISTS idx_collections_contract ON collections(contract_id);
+CREATE INDEX IF NOT EXISTS idx_collections_receivable ON collections(receivable_id);
 CREATE INDEX IF NOT EXISTS idx_contracts_signer ON contracts(signer);
 CREATE INDEX IF NOT EXISTS idx_contracts_reviewed ON contracts(reviewed);
+CREATE INDEX IF NOT EXISTS idx_contracts_status ON contracts(status);
 CREATE INDEX IF NOT EXISTS idx_risk_alert_contract ON risk_alert(contract_id);
+CREATE INDEX IF NOT EXISTS idx_contract_audit_contract ON contract_audit(contract_id);
+CREATE INDEX IF NOT EXISTS idx_notification_retry ON notification_log(success, next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_qc_results_created_at ON qc_results(created_at);
+CREATE INDEX IF NOT EXISTS idx_qc_results_verdict ON qc_results(verdict);
+CREATE INDEX IF NOT EXISTS idx_ocr_results_created_at ON ocr_results(created_at);
+CREATE INDEX IF NOT EXISTS idx_payments_contract ON payments(contract_id);
 """
 
 # 平滑迁移: 为旧库已有表补齐新增列 (table -> [(column, ddl)])
