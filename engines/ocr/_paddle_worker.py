@@ -63,42 +63,8 @@ def main():
             enable_mkldnn=False,
         )
         result = ocr.predict(args.image_path)
-
-        lines = []
-        for page in result:
-            # OCRResult 可能是 dict-like (paddlex) 或普通对象
-            if hasattr(page, "get"):
-                texts = page.get("rec_texts", None)
-                polys = page.get("rec_polys", page.get("dt_polys", None))
-                scores = page.get("rec_scores", None)
-            else:
-                texts = getattr(page, "rec_texts", None)
-                polys = getattr(page, "rec_polys", None)
-                scores = getattr(page, "rec_scores", None)
-
-            if texts is None:
-                if isinstance(page, (list, tuple)):
-                    for item in page:
-                        if isinstance(item, (list, tuple)) and len(item) == 2:
-                            box, ts = item
-                            txt, score = ts
-                            lines.append({"text": str(txt), "box": _norm_box(box),
-                                          "confidence": float(score)})
-                continue
-
-            polys = polys if polys is not None else [[] for _ in texts]
-            scores = scores if scores is not None else [0.0 for _ in texts]
-            for txt, box, score in zip(texts, polys, scores):
-                lines.append({"text": str(txt), "box": _norm_box(box),
-                              "confidence": float(score)})
-
-        avg = sum(l["confidence"] for l in lines) / len(lines) if lines else 0.0
-        output = {
-            "text": "\n".join(l["text"] for l in lines),
-            "lines": lines,
-            "confidence": round(avg, 4),
-            "engine": "paddleocr_vl",
-        }
+        output = format_ocr_result(result)
+        output["engine"] = "paddleocr_vl"
         # ensure_ascii=True: 纯 ASCII 输出, 避免任何编码问题
         print(json.dumps(output, ensure_ascii=True))
 
@@ -106,6 +72,51 @@ def main():
         print(json.dumps({"error": str(e), "engine": "paddleocr_vl"},
                          ensure_ascii=True))
         sys.exit(1)
+
+
+def format_ocr_result(result) -> dict:
+    """将 PaddleOCR predict 结果格式化为统一 JSON dict。
+
+    兼容 paddlex OCRResult (dict-like) 与普通对象两种返回。
+    供 _paddle_worker.py (子进程/容器单次) 与 paddle_server.py (常驻服务) 复用。
+
+    Returns:
+        {"text": str, "lines": [{"text","box","confidence"}], "confidence": float}
+    """
+    lines = []
+    for page in result:
+        # OCRResult 可能是 dict-like (paddlex) 或普通对象
+        if hasattr(page, "get"):
+            texts = page.get("rec_texts", None)
+            polys = page.get("rec_polys", page.get("dt_polys", None))
+            scores = page.get("rec_scores", None)
+        else:
+            texts = getattr(page, "rec_texts", None)
+            polys = getattr(page, "rec_polys", None)
+            scores = getattr(page, "rec_scores", None)
+
+        if texts is None:
+            if isinstance(page, (list, tuple)):
+                for item in page:
+                    if isinstance(item, (list, tuple)) and len(item) == 2:
+                        box, ts = item
+                        txt, score = ts
+                        lines.append({"text": str(txt), "box": _norm_box(box),
+                                      "confidence": float(score)})
+            continue
+
+        polys = polys if polys is not None else [[] for _ in texts]
+        scores = scores if scores is not None else [0.0 for _ in texts]
+        for txt, box, score in zip(texts, polys, scores):
+            lines.append({"text": str(txt), "box": _norm_box(box),
+                          "confidence": float(score)})
+
+    avg = sum(l["confidence"] for l in lines) / len(lines) if lines else 0.0
+    return {
+        "text": "\n".join(l["text"] for l in lines),
+        "lines": lines,
+        "confidence": round(avg, 4),
+    }
 
 
 def _norm_box(box):

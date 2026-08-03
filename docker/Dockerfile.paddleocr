@@ -2,13 +2,23 @@
 #
 # 用途: 在 Windows 上通过容器运行 PaddleOCR PP-OCRv6 (绕过原生 PIR+OneDNN bug + cudnn DLL 冲突)
 # 构建: docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
-# 运行 (GPU): docker run --gpus all -v "%USERPROFILE%\.paddlex:/root/.paddlex" -v "D:\images:/data" visionocr-paddleocr /data/test.png
-# 运行 (CPU): docker run --rm --gpus all -v "%USERPROFILE%\.paddlex:/root/.paddlex" -v "D:\images:/data" visionocr-paddleocr /data/test.png --device cpu
 #
-# 引擎集成: engines/ocr/ppocrv6.py (PPOCRv6Engine) 自动管理容器调用
+# 运行模式 1 — 常驻 HTTP 服务 (v1.3.0+ 默认, 宿主引擎自动管理, 亚秒级响应):
+#   docker run -d --name visionocr-paddle-serve --gpus all \
+#     -p 127.0.0.1:8686:8000 -v "%USERPROFILE%\.paddlex:/root/.paddlex" \
+#     --entrypoint python visionocr-paddleocr paddle_server.py --device gpu --port 8000
+#   GET  http://127.0.0.1:8686/health
+#   POST http://127.0.0.1:8686/ocr  (multipart field: file)
+#
+# 运行模式 2 — 单次调用 (旧模式, 兼容保留, 每次 5~13s 容器开销):
+#   docker run --rm --gpus all -v "%USERPROFILE%\.paddlex:/root/.paddlex" -v "D:\images:/data" visionocr-paddleocr /data/test.png
+#   CPU: 末尾追加 --device cpu
+#
+# 引擎集成: engines/ocr/ppocrv6.py (PPOCRv6Engine) 自动管理容器:
+#   优先常驻服务; 镜像未含 paddle_server.py (旧镜像) 时自动降级单次调用
 # 模型缓存: 挂载宿主机 ~/.paddlex → 容器 /root/.paddlex (首次下载后持久化)
 #
-# 输出: JSON 到 stdout, 格式与 _paddle_worker.py 一致
+# 输出: JSON, 格式与 _paddle_worker.py 一致
 #   {"text": "...", "lines": [...], "confidence": 0.95, "engine": "ppocrv6"}
 #
 # 精度基准 (60张工业合成图, CPU):
@@ -24,11 +34,13 @@ RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends libgl1 libgomp1 libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
-# 安装 PaddleOCR 3.7+ (含 PP-OCRv6 模型)
-RUN pip install --no-cache-dir "paddleocr>=3.7" --quiet
+# 安装 PaddleOCR 3.7+ (含 PP-OCRv6 模型) + 常驻 HTTP 服务依赖
+# python-multipart: FastAPI UploadFile (multipart 解析) 必需
+RUN pip install --no-cache-dir "paddleocr>=3.7" fastapi uvicorn python-multipart --quiet
 
-# 复制 worker 脚本
+# 复制 worker 脚本 (单次模式入口 + 结果格式化库) 与常驻服务
 COPY engines/ocr/_paddle_worker.py /app/worker.py
+COPY docker/paddle_server.py /app/paddle_server.py
 
 WORKDIR /app
 

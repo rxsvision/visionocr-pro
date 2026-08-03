@@ -78,10 +78,13 @@ ocr:
   fallback_engine: "rapidocr" # 主引擎不可用时降级 (与默认相同=无二次降级)
   confidence_threshold: 0.75 # 置信度 < 此值 → "待人工复核" (NG 拦截)
   # PP-OCRv6 高精度插件 (Docker 隔离, 93.3% 精确匹配, 按需显式调用)
+  # v1.3.0: 常驻容器服务模式 (模型加载一次, 推理亚秒级); 旧镜像自动降级单次调用
   ppocrv6:
     gpu: true                  # Docker 容器内使用 GPU
     timeout: 120               # 单次推理超时 (秒)
     docker_image: "visionocr-paddleocr"
+    port: 8686                 # 常驻服务宿主映射端口 (仅 127.0.0.1)
+    startup_timeout: 120       # 常驻容器启动+模型加载超时 (秒)
   scene_classifier:
     enabled: true
     confidence_threshold: 0.7
