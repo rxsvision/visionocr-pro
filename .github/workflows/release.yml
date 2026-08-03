@@ -1,11 +1,8 @@
-name: Release
+name: Release Gate
 
 on:
   push:
     tags: ["v*"]
-
-permissions:
-  contents: write
 
 jobs:
   test:
@@ -43,33 +40,3 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
-
-  release:
-    name: Create GitHub Release
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Extract release notes from CHANGELOG
-        id: changelog
-        run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          # Extract section between ## [VERSION] and next ## [
-          NOTES=$(awk "/^## \\[${VERSION}\\]/{found=1; next} /^## \\[/{if(found) exit} found" CHANGELOG.md)
-          # Write to file for multiline safety
-          echo "$NOTES" > release_notes.md
-          echo "extracted=true" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.ref_name }}"
-          gh release create "$TAG" \
-            --title "$TAG" \
-            --notes-file release_notes.md \
-            --target "${{ github.sha }}"
