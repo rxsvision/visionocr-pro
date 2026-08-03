@@ -259,17 +259,33 @@ Windows 原生不支持 PaddlePaddle GPU（DLL 冲突），但可通过 Docker D
 - NVIDIA 驱动 ≥ 525
 - Docker Desktop 设置中启用 GPU 支持
 
-### 使用方式
+### 使用方式（v1.3.0+：常驻容器服务，引擎自动管理）
 
 ```bash
-# 构建 PaddleOCR 服务镜像
+# 构建镜像（含常驻 HTTP 服务 paddle_server.py）
 docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
-
-# 运行推理（挂载图片目录）
-docker run --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
 ```
 
-> 此功能为可选增强。当前 RapidOCR 已覆盖 Windows 全部 OCR 需求，Docker 方案仅在需要 PaddleOCR-VL 版面分析能力时使用。
+构建完成后**无需手动启动容器**：在 UI 中选择 PP-OCRv6 引擎时，
+`PPOCRv6Engine` 会自动拉起常驻容器（`visionocr-paddle-serve`，
+端口 `ocr.ppocrv6.port`，默认 8686），模型加载一次常驻内存，
+推理响应亚秒级；引擎卸载或应用退出时自动清理容器。
+
+手动调试入口：
+
+```bash
+# 健康检查
+curl http://127.0.0.1:8686/health
+
+# 单次推理 (multipart 上传图像)
+curl -F "file=@test.png" http://127.0.0.1:8686/ocr
+
+# 旧单次调用模式（兼容保留，每次 5~13s 容器开销，仅降级场景）
+docker run --rm --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
+```
+
+> PP-OCRv6 为高精度 OCR 插件（93.3% 精确匹配）；默认引擎为 RapidOCR（纯本地）。
+> 镜像过旧（未含 paddle_server.py）时引擎自动降级为旧单次调用模式并提示重建镜像。
 
 ---
 
@@ -604,14 +620,34 @@ Windows cannot run PaddlePaddle GPU natively (DLL conflict). Docker Desktop + WS
 - NVIDIA Driver ≥ 525
 - GPU support enabled in Docker Desktop settings
 
-### Usage
+### Usage (v1.3.0+: resident container service, engine-managed)
 
 ```bash
+# Build the image (includes the resident HTTP service paddle_server.py)
 docker build -f docker/Dockerfile.paddleocr -t visionocr-paddleocr .
-docker run --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
 ```
 
-> Optional enhancement. RapidOCR covers all Windows OCR needs. Docker is only for PaddleOCR-VL layout analysis.
+After building, **no manual container startup is needed**: when you select the
+PP-OCRv6 engine in the UI, `PPOCRv6Engine` automatically launches a resident
+container (`visionocr-paddle-serve`, port `ocr.ppocrv6.port`, default 8686).
+The model loads once and stays in memory; inference responds in sub-second
+time. The container is cleaned up on engine unload / app exit.
+
+Manual debugging endpoints:
+
+```bash
+# Health check
+curl http://127.0.0.1:8686/health
+
+# Single inference (multipart image upload)
+curl -F "file=@test.png" http://127.0.0.1:8686/ocr
+
+# Legacy one-shot mode (kept for fallback, 5~13s container overhead per call)
+docker run --rm --gpus all -v "D:\images:/data" visionocr-paddleocr /data/test.png
+```
+
+> PP-OCRv6 is the high-accuracy OCR plugin (93.3% exact match); the default engine is RapidOCR (pure local).
+> With a stale image (missing paddle_server.py), the engine auto-degrades to legacy one-shot mode and prompts for a rebuild.
 
 ---
 

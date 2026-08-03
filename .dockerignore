@@ -1,0 +1,6 @@
+# 构建上下文白名单模式: 仅需 COPY 的两个文件进入上下文。
+# 避免传输 models/ (~1.7GB)、data/、exports/ 等大目录与本地数据,
+# 同时杜绝本地图像/客户数据进入构建上下文 (隐私红线)。
+*
+!engines/ocr/_paddle_worker.py
+!docker/paddle_server.py

@@ -9,14 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PP-OCRv6 常驻容器服务** (`docker/paddle_server.py`): 容器内 FastAPI 常驻服务，模型加载一次常驻内存，推理从每次 5~13s 容器开销降至亚秒级；宿主引擎自动管理容器（启动/健康轮询/崩溃自愈重启/unload 停止），旧镜像自动降级单次 `docker run --rm` 模式零中断；`/health` `/ocr` 端点可 curl 调试；新增 `tests/test_ppocrv6_server.py` 19 例（协议/降级决策/自愈/生命周期）
+- **常驻引擎保障** (`EngineMeta.resident`): 常驻引擎不参与 LRU 显存驱逐与空闲卸载，4 个检测源（PatchCore/DINOv2/GDINO/YOLO 门控）在 12GB 预算内常驻；`registry.status()` 输出 resident 列表
+- **空闲卸载后台线程**: `vram.idle_unload_sec` 配置正式生效（此前为无后台线程的死配置），空闲超时自动卸载非常驻引擎释放显存
 - **环境自检 doctor** (`scripts/doctor.py`): Python 版本/解释器位置/核心与重依赖导入/config.yaml 加载/模型目录/Ollama 一键体检；核心依赖或 config 失败报 FAIL (exit 1)，重依赖缺失仅 WARN 降级；setup.bat 与 setup.sh 安装末尾自动运行；检查项含 sklearn
 - **新产品接入指南** (`docs/new_product_onboarding.md`): OK 库登记五步法（≥50 张 OK 采集 → PatchCore+DINOv2 双建库 → NP 校准 ε → NG 回归 Recall=100% → 双条件放行），含 NG-only 数据集不可验收、弱标签不可信、降 GDINO 阈值追召回不可行等实测误区
+- **`.dockerignore` 白名单模式**: paddleocr 镜像构建上下文从全仓库（含 GB 级 models/data）降至 ~10KB，杜绝本地图像/数据进入构建上下文
+- **UI OCR 引擎选择**: 新增「PP-OCRv6 (高精度·需Docker)」明示选项，替换误导性的「PP-OCRv6 (CPU快速)」命名
 
 ### Changed
 
+- **默认 OCR 引擎 ppocrv6 → rapidocr**: 纯本地零容器开销；PP-OCRv6 转为显式调用的高精度插件（93.3% 精确匹配场景）；推理期降级不再静默——UI 日志明示引擎切换与精度风险
+- **Union 并行推理**: PatchCore + DINOv2 准备阶段串行、推理 ThreadPoolExecutor 并行，产线 4096×3000 图表面双源段 247ms→175ms (-42%)；单源就绪时退化为串行，ng_sources 顺序不变
+- **Grounding DINO 本地缓存优先加载**: `local_files_only=True` 缓存命中路径全离线（消除每次加载的 HF 308 联网探测），缓存缺失回退联网下载（首次）
+- **`vram.idle_unload_sec` 默认 300 → 1800**: 与常驻引擎策略配套，避免检测引擎被频繁卸载重载
 - **setup.bat / setup.sh**: 已有 `.venv` 时直接复用、跳过 PATH 扫描（避免命中无关解释器）；全新安装时打印命中解释器完整路径
 - **requirements.txt**: 显式声明 `paddlepaddle>=3.0`（CPU 版 Windows/macOS/Linux 通用，本机实测驱动 PP-OCRv6 主引擎）；修正"paddlepaddle Windows 不可用"过时注释（仅 `-gpu` 变体在 Windows 与 torch cudnn 冲突）；补声明 `scikit-learn>=1.3`（dinov2_anomaly 的 PCA/GMM 直接依赖，此前仅经外部继承环境隐式存在）
-- **README / DEPLOY**: 新增 doctor 用法与"随插拔式"部署须知（裸 python 陷阱、禁止经 `.pth` 继承外部应用 venv）；paddle 相关表述与 requirements.txt 对齐
+- **worker.py 提取 `format_ocr_result()`**: 单次/常驻两条推理路径复用同一结果格式化逻辑，输出协议不变
+- **README / DEPLOY**: 新增 doctor 用法与"随插拔式"部署须知（裸 python 陷阱、禁止经 `.pth` 继承外部应用 venv）；DEPLOY 第 6 节中英双语同步常驻容器服务架构；paddle 相关表述与 requirements.txt 对齐
+- 测试 123 → 138
+
+### Fixed
+
+- **特征库自动发现**: 重启后无产品上下文时 PatchCore/DINOv2 特征库不加载 → 缺陷全部判 OK 的严重问题；唯一 bank 自动加载、多 bank 明确告警；所有检测源被跳过时 verdict=OK 不可信告警
+- **onnxruntime-gpu 安装残缺**: CPU/GPU 包共存导致共享文件损坏（`no attribute '__version__'`），以 `--force-reinstall --no-deps onnxruntime-gpu==1.28.0` 修复并验证 CUDA/TensorRT provider 可用
 
 ### Notes
 
