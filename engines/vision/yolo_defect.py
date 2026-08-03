@@ -20,6 +20,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from engines.base import BaseEngine, EngineMeta, EngineState
 
 logger = logging.getLogger("visionocr.yolo_defect")
@@ -124,7 +126,7 @@ class YOLODefectEngine(BaseEngine):
             self._loaded_product = product_name
         return self.is_ready()
 
-    def infer(self, image_path: str, **kwargs) -> Any:
+    def infer(self, image: Any, **kwargs) -> Any:
         if not self.is_ready():
             return {"boxes": [], "labels": [], "scores": [], "count": 0,
                     "error": "YOLO 引擎未就绪"}
@@ -132,13 +134,13 @@ class YOLODefectEngine(BaseEngine):
         imgsz = int(kwargs.get("imgsz", self._imgsz))
 
         try:
-            results = self._predict(image_path, conf, imgsz)
+            results = self._predict(image, conf, imgsz)
         except RuntimeError as e:
             if "out of memory" in str(e).lower() and self._device == "cuda":
                 logger.warning("YOLO GPU OOM, 降级 CPU 重试")
                 self._device = "cpu"
                 try:
-                    results = self._predict(image_path, conf, imgsz)
+                    results = self._predict(image, conf, imgsz)
                 except Exception as e2:
                     return {"boxes": [], "labels": [], "scores": [], "count": 0,
                             "error": f"CPU 重试失败: {e2}"}
@@ -151,12 +153,16 @@ class YOLODefectEngine(BaseEngine):
 
         return self._format(results)
 
-    def _predict(self, image_path: str, conf: float, imgsz: int):
-        # imread_unicode 兼容中文路径: ultralytics 支持 numpy 数组输入
-        from core.imutils import imread_unicode
-        img = imread_unicode(image_path)
+    def _predict(self, image: Any, conf: float, imgsz: int):
+        # ndarray 直通 (调用方已解码, 避免重复读盘, v1.5.0);
+        # 路径输入用 imread_unicode 兼容中文路径
+        if isinstance(image, np.ndarray):
+            img = image
+        else:
+            from core.imutils import imread_unicode
+            img = imread_unicode(str(image))
         if img is None:
-            raise ValueError(f"图像读取失败: {image_path}")
+            raise ValueError(f"图像读取失败: {image}")
         return self._model.predict(
             img, conf=conf, imgsz=imgsz, device=self._device, verbose=False)
 

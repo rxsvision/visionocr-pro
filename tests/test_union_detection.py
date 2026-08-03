@@ -31,6 +31,7 @@ class SurfaceEngine(BaseEngine):
                                 category="vision", vram_gb=0.1)
         self.verdict = verdict
         self.has_bank = True
+        self.received = None
         if n_cal:
             self._np_calibrator = _FakeCalibrator(n_cal)
 
@@ -45,6 +46,7 @@ class SurfaceEngine(BaseEngine):
         self.state = EngineState.UNLOADED
 
     def infer(self, image_path, **kw):
+        self.received = image_path
         return {
             "pred_label": self.verdict,
             "score": 0.9 if self.verdict == "NG" else 0.1,
@@ -91,6 +93,7 @@ class YoloEngine(BaseEngine):
                                 category="vision", vram_gb=0.1)
         self.has_weights = has_weights
         self.count = count
+        self.received = None
 
     @property
     def meta(self):
@@ -109,6 +112,7 @@ class YoloEngine(BaseEngine):
         return False
 
     def infer(self, image_path):
+        self.received = image_path
         boxes = [[5, 5, 20, 20]] * self.count
         return {"boxes": boxes, "labels": ["hole"] * self.count,
                 "scores": [0.8] * self.count, "count": self.count}
@@ -242,3 +246,17 @@ def test_fusion_mode_or_fallback(image_path, registry):
     r = _run(registry, image_path,
              config={"qc": {"union": {"fusion": {"mode": "or"}}}})
     assert r["verdict"] == "NG"  # mode=or 下不产生 REVIEW
+
+
+def test_engines_receive_ndarray_not_path(image_path, registry):
+    """v1.5.0 单次解码契约: 各源收到已解码 ndarray, 不重复读盘。"""
+    pc = SurfaceEngine({}, "anomalib", verdict="OK")
+    dv = SurfaceEngine({}, "dinov2_anomaly", verdict="OK")
+    yo = YoloEngine({}, has_weights=True, count=0)
+    registry.register(pc)
+    registry.register(dv)
+    registry.register(yo)
+    _run(registry, image_path, product_name="产品A")
+    for eng in (pc, dv, yo):
+        assert isinstance(eng.received, np.ndarray), \
+            f"{eng.meta.name} 应收到 ndarray 直通输入"

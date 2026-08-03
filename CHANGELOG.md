@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Registry 并发模型重构: per-engine 锁替代全局锁 (模型加载不再阻塞其他引擎), 新增 infer 租约机制防止推理中引擎被驱逐/卸载 (修复 C-1)
 - 拆分 `defect_detector.py` 上帝模块: 配方 → `core.recipes`, 可视化 → `core.qc_drawing`, 落库 → `core.qc_persist`, 原模块仅保留检测流程并 re-export 保持兼容
+- 图像单次解码 + ndarray 直通: 检测流程只解码一次磁盘文件, 向 PatchCore/DINOv2/GDINO/YOLO 传递已解码 ndarray (热路径每张图省 2~3 次重复读盘解码)
 
 ### Fixed
 

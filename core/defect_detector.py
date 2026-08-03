@@ -77,9 +77,10 @@ def run_detection(registry, image_path: str, prompt: str = "",
     en_prompt = translate_prompt(prompt)
     from core.infer_stats import Timer
     # infer 租约: 推理期间引擎不会被 LRU 驱逐/空闲卸载 (v1.5.0)
+    # ndarray 直通: 避免引擎内部重复解码磁盘文件 (v1.5.0)
     with registry.lease("grounding_dino"):
         with Timer("grounding_dino"):
-            result = engine.infer(image_path, prompt=en_prompt,
+            result = engine.infer(img, prompt=en_prompt,
                                   threshold=threshold)
 
     if result.get("error"):
@@ -157,12 +158,12 @@ def run_anomaly_detection(registry, image_path: str,
                 "anomaly_map": None,
                 "error": "记忆库为空, 请先注册OK样本 (train/load_bank)"}
 
-    # 推理 (infer 租约保护, v1.5.0)
+    # 推理 (infer 租约保护, v1.5.0; ndarray 直通避免重复解码)
     kwargs = {}
     if threshold is not None:
         kwargs["threshold"] = threshold
     with registry.lease("anomalib"):
-        result = engine.infer(image_path, **kwargs)
+        result = engine.infer(img, **kwargs)
 
     if result.get("error"):
         return {"image": img, "verdict": "ERROR", "score": 0,
@@ -318,6 +319,7 @@ def run_union_detection(registry, image_path: str,
     # 准备阶段 (ensure_loaded/特征库加载) 已在主线程串行完成,
     # 推理本身无 registry 状态变更, 两引擎相互独立, 线程安全。
     # infer 租约: 推理窗口内禁止驱逐/卸载参与引擎 (v1.5.0)
+    # ndarray 直通: 传入已解码 img, 避免各引擎重复读盘 (v1.5.0)
     _leased: list[str] = []
     if pc_engine is not None:
         registry.acquire_lease("anomalib")
@@ -329,8 +331,8 @@ def run_union_detection(registry, image_path: str,
         if pc_engine is not None and dv_engine is not None:
             with ThreadPoolExecutor(max_workers=2,
                                     thread_name_prefix="union") as ex:
-                f_pc = ex.submit(pc_engine.infer, image_path, **pc_kwargs)
-                f_dv = ex.submit(dv_engine.infer, image_path, **dv_kwargs)
+                f_pc = ex.submit(pc_engine.infer, img, **pc_kwargs)
+                f_dv = ex.submit(dv_engine.infer, img, **dv_kwargs)
                 # 单源异常不得拖垮整体: 置 error 结果, 下游统一降级处理
                 try:
                     pc_result = f_pc.result()
@@ -344,13 +346,13 @@ def run_union_detection(registry, image_path: str,
                     dv_result = {"error": str(e)}
         elif pc_engine is not None:
             try:
-                pc_result = pc_engine.infer(image_path, **pc_kwargs)
+                pc_result = pc_engine.infer(img, **pc_kwargs)
             except Exception as e:
                 logger.warning("Union/PatchCore 推理异常: %s", e)
                 pc_result = {"error": str(e)}
         elif dv_engine is not None:
             try:
-                dv_result = dv_engine.infer(image_path, **dv_kwargs)
+                dv_result = dv_engine.infer(img, **dv_kwargs)
             except Exception as e:
                 logger.warning("Union/DINOv2 推理异常: %s", e)
                 dv_result = {"error": str(e)}
@@ -389,7 +391,7 @@ def run_union_detection(registry, image_path: str,
             with registry.lease("yolo_defect"):
                 with Timer("yolo_defect"):
                     try:
-                        yolo_result = yolo_eng.infer(image_path)
+                        yolo_result = yolo_eng.infer(img)
                     except Exception as e:
                         logger.warning("Union/YOLO 推理异常: %s", e)
                         yolo_result = {"error": str(e)}
