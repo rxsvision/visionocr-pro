@@ -126,6 +126,24 @@ run.bat            # Windows
 
 > 首次运行约 15-40 分钟（下载模型），后续启动无需重复。全程无需管理员权限。
 
+#### 环境自检（doctor）
+
+```bash
+.venv\Scripts\python.exe scripts\doctor.py    # Windows
+# .venv/bin/python scripts/doctor.py          # Linux
+```
+
+安装完成后 setup 会自动运行 doctor；日常排障也可手动执行（核心依赖/config 失败报
+FAIL，重依赖缺失仅 WARN 并降级对应功能）。
+
+**部署自包含（随插拔式）**：仓库 `.venv` 为完全独立的虚拟环境，不继承任何外部
+应用（其他工具/Agent）的 site-packages，整目录复制即可迁移。两条常见陷阱：
+
+- 不要用系统裸 `python` 直接跑本仓库脚本——统一经 `run.bat` 或
+  `.venv\Scripts\python.exe`，避免依赖漂移与坏包陷阱；
+- 不要从其他应用的 venv 派生/继承本仓库环境（如 `.pth` 指向外部 site-packages）——
+  外部应用重装会静默摧毁继承的依赖。`setup.bat` 创建的 venv 无此耦合。
+
 #### 模型分布
 
 模型权重由各运行时工具管理，不集中在仓库内（[详细说明](DEPLOY.md#4-模型分布架构)）：
@@ -227,7 +245,8 @@ visionocr-pro/
 │   └── tab_settings.py     #   设置 + 引擎健康面板
 ├── finetune/               # 微调工具链 (PP-OCRv6 + YOLO 缺陷检测)
 ├── dashboard/              # Datasette 插件 (质检看板图片路由)
-├── scripts/                # 辅助脚本 (评估/诊断/看板)
+├── scripts/                # 辅助脚本 (doctor自检/评估/诊断/看板)
+├── docs/                   # 指南 (新产品接入/OK库登记)
 ├── scenarios/              # 场景配置
 ├── tests/                  # pytest 单元测试 (123 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
@@ -335,7 +354,7 @@ run.bat            # Windows
 | PatchCore | ~100 MB | Built-in | torchvision first-run |
 | DINOv2-S/14 | 85 MB | `~/.cache/huggingface/` | transformers auto |
 
-> **Windows note**: Do NOT install paddlepaddle-gpu (cudnn DLL conflict). RapidOCR covers all OCR needs. For PaddleOCR-VL, see [Docker option](DEPLOY.md#6-docker-option-paddleocr-on-windows).
+> **Windows note**: Install CPU build `paddlepaddle` (required by the PP-OCRv6 primary engine; declared in requirements.txt). Do NOT install paddlepaddle-gpu on Windows (cudnn DLL conflict) — GPU builds are Linux/Jetson only. RapidOCR remains the lightweight fallback. For PaddleOCR-VL, see [Docker option](DEPLOY.md#6-docker-option-paddleocr-on-windows).
 
 ### License
 

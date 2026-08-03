@@ -27,6 +27,27 @@ info "Project root: $PROJECT_ROOT"
 echo ""
 
 # --- Step 1: Check Python ---
+# 已有可用 .venv 时直接复用, 不扫 PATH (避免命中无关解释器)
+if [[ -f ".venv/bin/python" ]]; then
+    echo "[1/7] Found existing .venv -- reusing it, skipping PATH scan"
+    echo "      Interpreter: $PROJECT_ROOT/.venv/bin/python"
+    VENV_PYTHON="$PROJECT_ROOT/.venv/bin/python"
+    VENV_PIP="$PROJECT_ROOT/.venv/bin/pip"
+    echo ""
+    echo "[3/7] Ensuring PyTorch (CUDA 12.6)..."
+    if ! "$VENV_PIP" install -q torch torchvision --index-url https://download.pytorch.org/whl/cu126; then
+        warn "CUDA PyTorch failed, trying CPU-only..."
+        "$VENV_PIP" install -q torch torchvision || { err "PyTorch install failed"; exit 1; }
+    fi
+    echo "[4/7] Ensuring project dependencies..."
+    "$VENV_PIP" install -q -r requirements.txt || "$VENV_PIP" install -q -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+    "$VENV_PIP" install -q pytest
+    jump_ahead=1
+else
+    jump_ahead=0
+fi
+
+if [[ "$jump_ahead" -eq 0 ]]; then
 echo "[1/7] Checking Python..."
 PYTHON_EXE=""
 for candidate in python3.13 python3.12 python3.11 python3; do
@@ -85,6 +106,7 @@ info "Installing PaddlePaddle GPU (Linux-only feature)..."
 "$VENV_PIP" install -q pytest
 ok "Dependencies installed"
 echo ""
+fi  # end of fresh-install path (jump_ahead == 0)
 
 # --- Step 5: Ollama ---
 echo "[5/7] Checking Ollama..."
@@ -121,6 +143,8 @@ echo ""
 
 # --- Step 7: Verification ---
 echo "[7/7] Running verification..."
+echo ""
+"$VENV_PYTHON" scripts/doctor.py || warn "doctor reported issues -- see above"
 echo ""
 "$VENV_PYTHON" -c "
 import torch

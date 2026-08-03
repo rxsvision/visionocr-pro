@@ -19,6 +19,13 @@ echo [INFO] Project root: %PROJECT_ROOT%
 echo.
 
 REM --- Step 1: Check Python version (3.11 - 3.13) ---
+REM 已有可用 .venv 时直接复用, 不扫 PATH (避免命中无关解释器)
+if exist ".venv\Scripts\python.exe" (
+    echo [1/7] Found existing .venv -- reusing it, skipping PATH scan
+    echo       Interpreter: %PROJECT_ROOT%\.venv\Scripts\python.exe
+    goto :venv_ready
+)
+
 echo [1/7] Checking Python...
 set "PYTHON_EXE="
 for %%V in (python3.13 python3.12 python3.11 python3 python) do (
@@ -51,21 +58,24 @@ if "%PYTHON_EXE%"=="" (
     exit /b 1
 )
 echo [OK] Found: %PYTHON_EXE% (version %PYVER%)
+for /f "delims=" %%W in ('where %PYTHON_EXE% 2^>nul') do (
+    echo      Full path: %%W
+    goto :show_once
+)
+:show_once
 echo.
 
 REM --- Step 2: Create virtual environment ---
 echo [2/7] Setting up virtual environment...
-if not exist ".venv\Scripts\python.exe" (
-    %PYTHON_EXE% -m venv .venv
-    if errorlevel 1 (
-        echo [ERROR] Failed to create virtual environment.
-        pause
-        exit /b 1
-    )
-    echo [OK] Created .venv
-) else (
-    echo [OK] .venv already exists, skipping creation
+%PYTHON_EXE% -m venv .venv
+if errorlevel 1 (
+    echo [ERROR] Failed to create virtual environment.
+    pause
+    exit /b 1
 )
+echo [OK] Created .venv
+
+:venv_ready
 set "VENV_PYTHON=%PROJECT_ROOT%\.venv\Scripts\python.exe"
 set "VENV_PIP=%PROJECT_ROOT%\.venv\Scripts\pip.exe"
 echo.
@@ -143,6 +153,13 @@ echo.
 
 REM --- Step 7: Verification ---
 echo [7/7] Running verification...
+echo.
+
+REM doctor 环境自检 (依赖/config 完整性)
+%VENV_PYTHON% scripts\doctor.py
+if errorlevel 1 (
+    echo   [WARN] doctor reported failures -- see above
+)
 echo.
 
 REM CUDA check

@@ -220,7 +220,8 @@ run.bat
 
 **Windows 重要说明：**
 
-- **不要安装 paddlepaddle-gpu。** cudnn DLL 与 PyTorch 冲突，不可修复。Windows OCR 由 RapidOCR 处理，功能完整。
+- **不要安装 paddlepaddle-gpu。** cudnn DLL 与 PyTorch 冲突，不可修复。
+- Windows 安装 **CPU 版 `paddlepaddle`**（requirements.txt 已声明），驱动 PP-OCRv6 主 OCR 引擎；RapidOCR 为轻量兜底。
 - 如需 PaddleOCR-VL，参见 [第 6 节 Docker 方案](#6-docker-可选windows-运行-paddleocr)。
 
 ### 5.2 Linux / Jetson
@@ -575,7 +576,7 @@ python scripts/download_models.py ovisocr2
 run.bat
 ```
 
-**Do NOT install paddlepaddle-gpu on Windows.** See [Docker option](#6-docker-option-paddleocr-on-windows) if PaddleOCR is needed.
+**Do NOT install paddlepaddle-gpu on Windows** (cudnn DLL conflict with PyTorch). Windows uses the **CPU build `paddlepaddle`** (declared in requirements.txt) to drive the PP-OCRv6 primary OCR engine; RapidOCR is the lightweight fallback. For PaddleOCR-VL, see [Docker option](#6-docker-option-paddleocr-on-windows).
 
 ### 5.2 Linux / Jetson
 

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **环境自检 doctor** (`scripts/doctor.py`): Python 版本/解释器位置/核心与重依赖导入/config.yaml 加载/模型目录/Ollama 一键体检；核心依赖或 config 失败报 FAIL (exit 1)，重依赖缺失仅 WARN 降级；setup.bat 与 setup.sh 安装末尾自动运行；检查项含 sklearn
+- **新产品接入指南** (`docs/new_product_onboarding.md`): OK 库登记五步法（≥50 张 OK 采集 → PatchCore+DINOv2 双建库 → NP 校准 ε → NG 回归 Recall=100% → 双条件放行），含 NG-only 数据集不可验收、弱标签不可信、降 GDINO 阈值追召回不可行等实测误区
+
+### Changed
+
+- **setup.bat / setup.sh**: 已有 `.venv` 时直接复用、跳过 PATH 扫描（避免命中无关解释器）；全新安装时打印命中解释器完整路径
+- **requirements.txt**: 显式声明 `paddlepaddle>=3.0`（CPU 版 Windows/macOS/Linux 通用，本机实测驱动 PP-OCRv6 主引擎）；修正"paddlepaddle Windows 不可用"过时注释（仅 `-gpu` 变体在 Windows 与 torch cudnn 冲突）；补声明 `scikit-learn>=1.3`（dinov2_anomaly 的 PCA/GMM 直接依赖，此前仅经外部继承环境隐式存在）
+- **README / DEPLOY**: 新增 doctor 用法与"随插拔式"部署须知（裸 python 陷阱、禁止经 `.pth` 继承外部应用 venv）；paddle 相关表述与 requirements.txt 对齐
+
+### Notes
+
+- `.venv` 要求完全自包含：不继承任何外部应用（其他工具/Agent）的 site-packages。外部应用重装会静默摧毁经 `.pth` 继承的依赖（真实事故案例），`setup.bat` 创建的 venv 无此耦合
+
 ## [1.2.1] - 2026-08-03
 
 ### Added
