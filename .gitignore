@@ -9,7 +9,7 @@ build/
 .venv-*/
 venv/
 
-# ─── 模型权重 & 数据 (体积大, 不入库) ─────────────────────────
+# ─── 模型权重 & 数据 (体积�? 不入�? ─────────────────────────
 models/
 data/
 *.db
@@ -44,5 +44,8 @@ credentials.json
 scripts/local_data_paths.yaml
 finetune/configs/rec_industrial_finetune.yaml
 
-# 运行时生成的结果文件 (热力图/审计)
+# 运行时生成的结果文件 (热力�?审计)
 results/
+
+# Qoder ���ع������� (harness ����/repowiki)
+.qoder/

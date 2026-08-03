@@ -64,9 +64,12 @@ def run_detection(registry, image_path: str, prompt: str = "",
         return {"image": None, "verdict": "ERROR", "detections": [],
                 "count": 0, "max_score": 0, "error": "Grounding DINO 引擎未注册"}
 
-    # 确保加载
+    # 确保加载 (load() 抛异常时优雅降级, 不向调用方传播)
     if not engine.is_ready():
-        registry.ensure_loaded("grounding_dino")
+        try:
+            registry.ensure_loaded("grounding_dino")
+        except Exception as e:
+            logger.warning("Grounding DINO 加载异常: %s", e)
     if not engine.is_ready():
         return {"image": None, "verdict": "ERROR", "detections": [],
                 "count": 0, "max_score": 0, "error": "模型加载失败"}
@@ -148,7 +151,10 @@ def run_anomaly_detection(registry, image_path: str,
                 "anomaly_map": None, "error": "PatchCore 引擎未注册"}
 
     if not engine.is_ready():
-        registry.ensure_loaded("anomalib")
+        try:
+            registry.ensure_loaded("anomalib")
+        except Exception as e:
+            logger.warning("PatchCore 加载异常: %s", e)
     if not engine.is_ready():
         return {"image": None, "verdict": "ERROR", "score": 0,
                 "anomaly_map": None, "error": "PatchCore 模型加载失败"}
@@ -257,7 +263,10 @@ def run_union_detection(registry, image_path: str,
         engine = registry.get("anomalib")
         if engine is not None:
             if not engine.is_ready():
-                registry.ensure_loaded("anomalib")
+                try:
+                    registry.ensure_loaded("anomalib")
+                except Exception as e:
+                    logger.warning("Union/PatchCore 加载异常: %s", e)
             # 自动加载产品特征库 (持久化 bank 在 Union 模式下直接生效)
             if engine.is_ready() and not engine.has_bank:
                 from core.anomaly_bank import (load_product_bank,
@@ -290,7 +299,10 @@ def run_union_detection(registry, image_path: str,
         dv_eng = registry.get("dinov2_anomaly")
         if dv_eng is not None:
             if not dv_eng.is_ready():
-                registry.ensure_loaded("dinov2_anomaly")
+                try:
+                    registry.ensure_loaded("dinov2_anomaly")
+                except Exception as e:
+                    logger.warning("Union/DINOv2 加载异常: %s", e)
             if dv_eng.is_ready() and not dv_eng.has_bank:
                 from core.anomaly_bank import (load_product_bank_dinov2,
                                                list_banks_dinov2)

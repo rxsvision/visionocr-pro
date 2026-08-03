@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-08-04
+
+### Fixed
+
+- 引擎加载异常优雅降级: `run_detection`/`run_anomaly_detection`/`run_union_detection` 中 `ensure_loaded` 抛异常时不再传播到调用方, 降级为 ERROR 结果 (Union 单源异常自动跳过)
+
+### Added
+
+- `tests/test_defect_detector.py`: 主力生产路径聚焦测试 23 项 (run_detection/run_anomaly_detection 判定契约/错误降级/尺寸过滤/阈值透传/ndarray 直通/re-export 面守卫)
+
 ## [1.5.0] - 2026-08-04
 
 ### Changed
