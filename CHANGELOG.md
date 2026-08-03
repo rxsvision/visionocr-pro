@@ -5,24 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0] - 2026-08-04
 
 ### Changed
 
 - Registry 并发模型重构: per-engine 锁替代全局锁 (模型加载不再阻塞其他引擎), 新增 infer 租约机制防止推理中引擎被驱逐/卸载 (修复 C-1)
 - 拆分 `defect_detector.py` 上帝模块: 配方 → `core.recipes`, 可视化 → `core.qc_drawing`, 落库 → `core.qc_persist`, 原模块仅保留检测流程并 re-export 保持兼容
 - 图像单次解码 + ndarray 直通: 检测流程只解码一次磁盘文件, 向 PatchCore/DINOv2/GDINO/YOLO 传递已解码 ndarray (热路径每张图省 2~3 次重复读盘解码)
+- 合同上传单文件大小限制 (`contracts.max_upload_mb` 默认 50 MB), 超限跳过并记错误日志
+- 批量审批信任链门控: 高置信合同须结构化校验通过 (金额勾稽 valid 标记/总额>0) 才自动通过, 否则拦截转人工复核
 
 ### Fixed
 
 - 路径清洗回退兼容: 旧产品配方/特征库文件名 (含 `.` 等特殊字符) 仍可读取/覆写, 新增 `tests/test_path_safety.py` 17 项用例
+- `perspective_correct` HoughLinesP 迭代兼容: `lines.reshape(-1, 4)` 修复新版 OpenCV 返回形状下 deskew 路径必崩
+- `image_preprocess.check_image_quality` 返回原生 `bool()`/`float()` (修复 np.True_ 类型泄漏)
 
 ### Added
 
+- `core/npz_io.py`: NPZ 安全加载 `load_npz_safe` — 从 npy 文件头检测 object dtype, 默认拒绝 pickle 反序列化, 仅自产可信特征库显式回退
 - `tests/test_registry_concurrency.py`: Registry 并发/租约/驱逐 12 项用例
 - `tests/test_union_detection.py`: 四源 Union 检测/融合契约 12 项用例
+- `tests/test_image_preprocess.py` (11) / `test_perspective_correct.py` (10) / `test_storage_dedup.py` (7) / `test_security_hardening.py` (8)
 - SQLite 补 9 个查询驱动索引 (qc_results/ocr_results 时间序、verdict、外键等)
 - 补建 v1.4.1 GitHub Release
+- 测试 258 → 294
 
 ## [1.4.1] - 2026-08-04
 

@@ -166,6 +166,7 @@ FAIL，重依赖缺失仅 WARN 并降级对应功能）。
 - `llm.api.api_key` — 云端 API 密钥（可选兜底）
 - `camera.type` — 相机类型 (hikvision / opencv / gigevision)
 - `ocr.confidence_threshold` — OCR 置信度拦截阈值（默认 0.75）
+- `contracts.max_upload_mb` — 合同上传单文件大小上限（默认 50 MB）
 - `ocr.scene_classifier.confidence_threshold` — 场景分类器旁路阈值（默认 0.7）
 - `qc.patchcore.np_epsilon` / `qc.dinov2.np_epsilon` — NP 校准目标误报率（默认 0.10，零漏检取向：Recall 优先，误报人工复核兜底；调小更保守、调大召回更高）
 - `qc.vlm_explain` — AI 解释开关与 ROI 参数（max_rois / pad_frac / rel_thresh 等）
@@ -215,7 +216,11 @@ visionocr-pro/
 │   ├── perspective_correct.py # 透视纠偏
 │   ├── postprocess.py      #   OCR 后处理纠错
 │   ├── depth_fusion.py     #   3D 深度融合
-│   ├── defect_detector.py  #   缺陷检测调度 (DINO/PatchCore/DINOv2/Union)
+│   ├── defect_detector.py  #   缺陷检测流程编排 (DINO/PatchCore/DINOv2/Union)
+│   ├── recipes.py          #   检测配方 (提示词/阈值, 按产品隔离)
+│   ├── qc_drawing.py       #   质检标注绘制 (检测框/热力图/判定徽章)
+│   ├── qc_persist.py       #   质检结果与图片落库
+│   ├── npz_io.py           #   NPZ 安全加载 (默认拒绝 pickle 对象数组)
 │   ├── anomaly_bank.py     #   PatchCore/DINOv2 特征库 (按产品隔离)
 │   ├── np_calibration.py   #   NP 校准 (异常阈值误报率统计可控)
 │   ├── roi_selector.py     #   智能 ROI 裁切 (热力图/检测框/整图兜底)
@@ -248,7 +253,7 @@ visionocr-pro/
 ├── scripts/                # 辅助脚本 (doctor自检/评估/诊断/看板)
 ├── docs/                   # 指南 (新产品接入/OK库登记)
 ├── scenarios/              # 场景配置
-├── tests/                  # pytest 单元测试 (123 tests)
+├── tests/                  # pytest 单元测试 (294 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 
