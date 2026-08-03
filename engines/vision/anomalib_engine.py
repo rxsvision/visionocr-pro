@@ -65,6 +65,7 @@ class AnomalibEngine(BaseEngine):
             license="Apache-2.0",
             description="10~30张OK样本建库, 无需标注即可检测未知缺陷 (WideResNet50-2)",
             tags=["缺陷检测", "异常检测", "少样本", "PatchCore", "零漏检"],
+            resident=True,
         )
 
     def load(self) -> None:

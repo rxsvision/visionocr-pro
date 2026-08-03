@@ -76,6 +76,7 @@ class DINOv2AnomalyEngine(BaseEngine):
             description="DINOv2-S/14 特征 + GMM 多原型分布建模 + NP 校准 "
                         "(与 PatchCore 互补的 Union 第4源)",
             tags=["缺陷检测", "异常检测", "少样本", "DINOv2", "零漏检"],
+            resident=True,
         )
 
     def load(self) -> None:

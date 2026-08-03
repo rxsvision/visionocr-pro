@@ -39,6 +39,7 @@ class GroundingDINOEngine(BaseEngine):
             license="Apache-2.0",
             description="文本提示驱动的零样本目标检测, 无需训练即可定位任意缺陷",
             tags=["检测", "开放词汇", "零样本", "文本驱动", "缺陷检测"],
+            resident=True,
         )
 
     def load(self) -> None:

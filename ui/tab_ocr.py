@@ -56,7 +56,8 @@ def create_tab_ocr(config: dict, registry, mode_toggle=None):
                     choices=["自动路由 (推荐)", "OvisOCR2 (印刷文档)",
                              "PaddleOCR-VL (相机照片)",
                              "HunyuanOCR (手写体·需24GB显存)",
-                             "PP-OCRv6 (CPU快速)"],
+                             "RapidOCR (CPU快速·默认)",
+                             "PP-OCRv6 (高精度·需Docker)"],
                     value="自动路由 (推荐)",
                     label="引擎选择",
                 )
@@ -138,7 +139,8 @@ ENGINE_MAP = {
     "OvisOCR2 (印刷文档)": "ovisocr2",
     "PaddleOCR-VL (相机照片)": "paddleocr_vl",
     "HunyuanOCR (手写体·需24GB显存)": "hunyuan_ocr",
-    "PP-OCRv6 (CPU快速)": "rapidocr",
+    "RapidOCR (CPU快速·默认)": "rapidocr",
+    "PP-OCRv6 (高精度·需Docker)": "ppocrv6",
 }
 
 # 场景 → 引擎映射
@@ -436,15 +438,22 @@ def _run_ocr_stream(editor_data, engine_label, conf_threshold, perspective_enabl
             with Timer(getattr(engine.meta, "name", engine_key)):
                 result = engine.infer(infer_path)
             if "error" in result and engine_key != "rapidocr":
+                # v1.3.0: 降级不再静默 — UI 明示引擎切换与精度风险
+                yield (None, "", "—", "—", "—", {},
+                       log(f"⚠ {engine_key} 推理返回异常, 已降级 rapidocr (精度可能下降)"))
                 fallback = registry.ensure_loaded("rapidocr")
                 with Timer("rapidocr"):
                     result = fallback.infer(infer_path)
+                engine, engine_key = fallback, "rapidocr"  # 后续目标直接用 rapidocr
         except Exception as e:
             if engine_key != "rapidocr":
+                yield (None, "", "—", "—", "—", {},
+                       log(f"⚠ {engine_key} 推理异常 ({e}), 已降级 rapidocr (精度可能下降)"))
                 try:
                     engine_fb = registry.ensure_loaded("rapidocr")
                     with Timer("rapidocr"):
                         result = engine_fb.infer(infer_path)
+                    engine, engine_key = engine_fb, "rapidocr"
                 except Exception:
                     result = {"text": "", "error": str(e), "confidence": 0}
             else:

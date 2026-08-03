@@ -5,11 +5,11 @@ device: "auto"
 
 vram:
   max_budget_gb: 12
-  idle_unload_sec: 300
+  idle_unload_sec: 1800      # v1.3.0: 后台空闲卸载生效, 常驻引擎豁免
   quantization: "q4"
 
 ocr:
-  default_engine: "ppocrv6"
+  default_engine: "rapidocr" # v1.3.0: 默认本地快速引擎 (PP-OCRv6 为高精度插件)
   fallback_engine: "rapidocr"
   ppocrv6:
     gpu: true

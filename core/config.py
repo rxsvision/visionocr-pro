@@ -94,7 +94,7 @@ def _defaults() -> dict:
         "export": {"dir": str(root / "exports"), "excel_summary": True},
         "model_source": "huggingface",
         "device": "auto",
-        "vram": {"max_budget_gb": 12, "idle_unload_sec": 300, "quantization": "q4"},
+        "vram": {"max_budget_gb": 12, "idle_unload_sec": 1800, "quantization": "q4"},
         "ocr": {"default_engine": "auto"},
         "llm": {
             "routing": {"policy": "local_first_cloud_fallback",

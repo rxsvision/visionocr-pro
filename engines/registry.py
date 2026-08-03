@@ -4,7 +4,8 @@
 1. 注册/发现所有引擎
 2. 按名称获取引擎实例
 3. LRU 策略自动加载/卸载, 保证不超显存预算
-4. 空闲超时自动卸载
+   (常驻引擎 resident=True 永不驱逐, v1.3.0)
+4. 空闲超时自动卸载 (后台线程, idle_unload_sec 生效, v1.3.0)
 """
 import logging
 import threading
@@ -25,9 +26,18 @@ class EngineRegistry:
         self.idle_unload_sec: int = vram_cfg.get("idle_unload_sec", 300)
 
         self._engines: dict[str, BaseEngine] = {}
-        # LRU: 最近使用在前
+        # LRU: 最近使用在前 (常驻引擎不入队, 天然豁免驱逐/空闲卸载)
         self._lru: OrderedDict[str, float] = OrderedDict()
         self._lock = threading.Lock()
+
+        # v1.3.0: 空闲超时卸载后台线程 (此前 idle_unload_sec 为死配置)
+        self._stop_idle = threading.Event()
+        self._idle_thread: Optional[threading.Thread] = None
+        if self.idle_unload_sec > 0:
+            self._idle_thread = threading.Thread(
+                target=self._idle_unload_loop, daemon=True,
+                name="registry-idle-unload")
+            self._idle_thread.start()
 
     # ─── 注册 ───────────────────────────────────────────────
     def register(self, engine: BaseEngine) -> None:
@@ -115,13 +125,17 @@ class EngineRegistry:
                 return engine
 
             needed = engine.meta.vram_gb
-            # 驱逐直到有足够空间
-            while self._used_vram() + needed > self.max_budget_gb and self._lru:
-                evict_name, _ = self._lru.popitem(last=True)
-                evict_eng = self._engines[evict_name]
-                if evict_eng.is_ready():
-                    logger.info("LRU 驱逐 %s 以释放显存", evict_name)
-                    evict_eng.unload()
+            # 驱逐直到有足够空间 (常驻引擎 resident=True 永不驱逐)
+            while self._used_vram() + needed > self.max_budget_gb:
+                victim = self._pick_eviction_victim()
+                if victim is None:
+                    logger.warning("显存预算不足但无可驱逐引擎 (常驻引擎受保护), "
+                                   "仍需 %.1fGB", needed)
+                    break
+                evict_eng = self._engines[victim]
+                logger.info("LRU 驱逐 %s 以释放显存", victim)
+                evict_eng.unload()
+                self._lru.pop(victim, None)
 
             engine.state = EngineState.LOADING
             engine.load()
@@ -143,8 +157,52 @@ class EngineRegistry:
 
     # ─── 内部 ───────────────────────────────────────────────
     def _touch(self, name: str):
+        engine = self._engines.get(name)
+        # 常驻引擎不入 LRU 队列 → 永不驱逐/空闲卸载 (v1.3.0)
+        if engine is not None and getattr(engine.meta, "resident", False):
+            self._lru.pop(name, None)
+            return
         self._lru.pop(name, None)
         self._lru[name] = time.time()
+
+    def _pick_eviction_victim(self) -> Optional[str]:
+        """按最久未使用顺序, 挑选第一个非常驻、已加载的驱逐候选。"""
+        # OrderedDict 尾部为最近使用 → 从头部(last=False)开始即最久未使用
+        for name in list(self._lru.keys()):
+            eng = self._engines.get(name)
+            if eng is None:
+                continue
+            if getattr(eng.meta, "resident", False):
+                continue
+            if eng.is_ready():
+                return name
+        return None
+
+    def _idle_unload_loop(self):
+        """后台线程: 卸载空闲超时引擎 (v1.3.0 让 idle_unload_sec 生效)。
+
+        常驻引擎不在 LRU 队列中, 天然豁免。
+        """
+        interval = max(5, min(60, self.idle_unload_sec // 10))
+        while not self._stop_idle.wait(interval):
+            now = time.time()
+            with self._lock:
+                expired = [n for n, t in list(self._lru.items())
+                           if now - t > self.idle_unload_sec]
+                for name in expired:
+                    eng = self._engines.get(name)
+                    self._lru.pop(name, None)
+                    if eng is not None and eng.is_ready():
+                        logger.info("空闲超时 (%ds), 卸载 %s",
+                                    self.idle_unload_sec, name)
+                        try:
+                            eng.unload()
+                        except Exception as e:
+                            logger.warning("空闲卸载 %s 失败: %s", name, e)
+
+    def shutdown(self):
+        """停止空闲卸载后台线程 (进程退出时由 daemon 兜底)。"""
+        self._stop_idle.set()
 
     def _used_vram(self) -> float:
         return sum(
@@ -158,5 +216,8 @@ class EngineRegistry:
             "max_budget_gb": self.max_budget_gb,
             "used_gb": round(self._used_vram(), 2),
             "loaded": [n for n, e in self._engines.items() if e.is_ready()],
+            "resident": [n for n, e in self._engines.items()
+                         if e.is_ready() and getattr(e.meta, "resident", False)],
+            "idle_unload_sec": self.idle_unload_sec,
             "registered": len(self._engines),
         }

@@ -67,15 +67,17 @@ device: "auto"
 # 显存管理
 vram:
   max_budget_gb: 12          # RTX 4070 Ti
-  idle_unload_sec: 300       # 空闲 5min 自动卸载
+  idle_unload_sec: 1800      # 空闲 30min 自动卸载 (v1.3.0 起由后台线程执行; 常驻引擎豁免)
   quantization: "q4"         # VLM 量化: q4 | q5 | q8 | fp16
 
 # OCR 引擎配置
+# v1.3.0: 默认引擎降级为 RapidOCR (纯本地, 无 Docker 依赖, 消除 5-13s 容器开销);
+# PP-OCRv6 作为高精度插件 (93.3% 精确匹配), 在 UI 引擎选择中显式使用。
 ocr:
-  default_engine: "ppocrv6"  # ppocrv6 | ovisocr2 | paddleocr_vl | rapidocr
-  fallback_engine: "rapidocr" # 主引擎不可用时降级 (无需Docker, 纯本地)
+  default_engine: "rapidocr" # ppocrv6 | ovisocr2 | paddleocr_vl | rapidocr
+  fallback_engine: "rapidocr" # 主引擎不可用时降级 (与默认相同=无二次降级)
   confidence_threshold: 0.75 # 置信度 < 此值 → "待人工复核" (NG 拦截)
-  # PP-OCRv6 工业主力 (Docker 隔离, 93.3% 精确匹配)
+  # PP-OCRv6 高精度插件 (Docker 隔离, 93.3% 精确匹配, 按需显式调用)
   ppocrv6:
     gpu: true                  # Docker 容器内使用 GPU
     timeout: 120               # 单次推理超时 (秒)
@@ -83,7 +85,7 @@ ocr:
   scene_classifier:
     enabled: true
     confidence_threshold: 0.7
-    fallback_engine: "ppocrv6"
+    fallback_engine: "rapidocr"
   # 图像预处理 (提升工业标记/小字符/低对比度场景精度)
   preprocess:
     enabled: true

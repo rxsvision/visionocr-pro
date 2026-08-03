@@ -22,6 +22,7 @@ class EngineMeta:
     license: str = "unknown"
     description: str = ""
     tags: list[str] = field(default_factory=list)
+    resident: bool = False         # 常驻引擎: 不参与 LRU 驱逐/空闲卸载 (v1.3.0)
 
 
 class BaseEngine(ABC):
