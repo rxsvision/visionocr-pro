@@ -5,6 +5,10 @@
   python scripts/eval_acceptance.py kolektor <root> [--out X.json]
       mask 标注表面缺陷 (Part*.jpg + Part*_label.bmp), 80/20 划分 (seed 2026)
 
+  python scripts/eval_acceptance.py subspacead <root> [--out X.json]
+      SubspaceAD 快速换线验收: 1/2/4-shot 建库 vs PatchCore 全库基线
+      (验收标准: 1-shot Recall@eps=0.10 ≥ 全库的 85%)
+
   python scripts/eval_acceptance.py pcb <root> [--out X.json]
       root/images/<类别>/*.jpg 为缺陷, root/PCB_USED/* 为 OK 建库样本
 
@@ -41,6 +45,9 @@ CFG = {"device": "auto", "qc": {
                   "conservative_mode": True, "np_epsilon": 0.10},
     "dinov2": {"input_size": 518, "pca_dim": 64,
                "n_etalons": 8, "np_epsilon": 0.10},
+    "subspacead": {"input_size": 448, "layers": [-4, -5],
+                   "pca_ev": 0.99, "aug_count": 30,
+                   "fast_max_images": 4, "np_epsilon": 0.10},
 }}
 
 
@@ -258,6 +265,28 @@ def _sweep_epsilon(eng, cal_scores, hold_scores, def_scores):
             "recall": round(float(np.mean(def_scores > tau)), 4),
         }
     return rows
+
+
+def _recall_at_matched_fpr(hold_scores, def_scores, eps):
+    """匹配误报率口径的 Recall (防退化, 跨方法公平)。
+
+    用真实未见 holdout OK 分数的 (1-eps) 次序统计量作阈值, 再看缺陷
+    Recall。阈值锚定在两个方法共同的诚实参照 (holdout 正常图) 上,
+    与各自自校准质量无关——避免某方法自校准偏松 (阈值塌陷→全判NG)
+    而虚高 Recall。缺陷图从不参与选阈值, 故 Recall 诚实。
+
+    Returns: (tau, fpr_hold, recall)
+    """
+    import math
+    hold = np.sort(np.asarray(hold_scores, dtype=np.float64))
+    n = len(hold)
+    if n == 0 or len(def_scores) == 0:
+        return float("nan"), float("nan"), float("nan")
+    rank = min(max(int(math.ceil((1 - eps) * (n + 1))), 1), n)
+    tau = float(hold[rank - 1])
+    fpr = float(np.mean(np.asarray(hold_scores) > tau))
+    recall = float(np.mean(np.asarray(def_scores) > tau))
+    return tau, fpr, recall
 
 
 def mode_kolektor(args) -> dict:
@@ -481,12 +510,137 @@ def mode_bootstrap(args) -> dict:
     return out
 
 
+def mode_subspacead(args) -> dict:
+    """SubspaceAD 快速换线验收: 1/2/4-shot vs PatchCore 全库基线。
+
+    验收标准 (方案 §5.2): 1-shot 模式 Recall@eps=0.10 ≥ PatchCore
+    全库模式同口径的 85%。同次运行计算基线, 保证口径一致。
+    """
+    from engines.vision.subspace_ad import SubspaceADEngine
+    from engines.vision.anomalib_engine import AnomalibEngine
+
+    root = Path(args.root)
+    normals, defects = scan_kolektor(root)
+    rng = np.random.default_rng(2026)  # 与 mode_kolektor 完全相同的划分
+    idx = rng.permutation(len(normals))
+    n_train = int(len(normals) * 0.8)
+    train = [normals[i] for i in idx[:n_train]]
+    holdout = [normals[i] for i in idx[n_train:]]
+    print(f"[subspacead] 正常 {len(normals)} (train {len(train)} / "
+          f"holdout {len(holdout)}), 缺陷 {len(defects)}")
+
+    out = {"dataset": "kolektor-subspacead",
+           "n_ok_train": len(train), "n_ok_hold": len(holdout),
+           "n_def": len(defects), "shots": {}}
+
+    for k in (1, 2, 4):
+        support = train[:k]  # train 已按 seed=2026 定序洗牌, 取前 k
+        print(f"\n── [{k}-shot] 建库: "
+              f"{[Path(p).name for p in support]} ──")
+        sa = SubspaceADEngine(CFG)
+        sa.load()
+        assert sa.is_ready(), "SubspaceAD 加载失败"
+        t0 = time.time()
+        meta = sa.train(support)
+        t_train = time.time() - t0
+        assert not meta.get("error"), meta
+        print(f"  建库 {t_train:.1f}s, pca_k={meta['pca_k']}, "
+              f"增广入池={meta['n_augmented']}, "
+              f"tau={sa._calibrated_threshold:.4f}")
+        s_hold, _ = score_paths(sa, holdout, f"SA{k}留出")
+        s_def, _ = score_paths(sa, defects, f"SA{k}缺陷")
+        tau = sa._calibrated_threshold
+        # 匹配FPR口径 (验收依据): 阈值锚定 holdout 正常图, 防自校准退化
+        mf = {f"{e:.2f}": _recall_at_matched_fpr(s_hold, s_def, e)
+              for e in (0.05, 0.10, 0.20)}
+        blk = {
+            "train_s": round(t_train, 1),
+            "pca_k": meta["pca_k"],
+            "auroc": auroc(s_def, s_hold),
+            "matched_fpr": {e: {"tau": round(t, 4),
+                                "fpr_hold": round(f, 4),
+                                "recall": round(r, 4)}
+                            for e, (t, f, r) in mf.items()},
+            # 自校准运行点 (仅透明展示; 快速模式增广自评偏乐观,
+            # 不作为验收依据, 见 matched_fpr)
+            "selfcal": {
+                "tau": float(tau),
+                "fpr_hold": float(np.mean(s_hold > tau)),
+                "recall": float(np.mean(s_def > tau)),
+            },
+        }
+        r10 = blk["matched_fpr"]["0.10"]["recall"]
+        print(f"  AUROC={blk['auroc']:.4f}  "
+              f"匹配FPR@0.10: Recall={r10:.2%} "
+              f"(tau={blk['matched_fpr']['0.10']['tau']:.4f})")
+        sc = blk["selfcal"]
+        print(f"  自校准(部署口径, 偏乐观): tau={sc['tau']:.4f} "
+              f"FPR-hold={sc['fpr_hold']:.2%} Recall={sc['recall']:.2%}")
+        out["shots"][str(k)] = blk
+        sa.unload()
+
+    # 基线: PatchCore 全库 (同划分; 验收同样用匹配FPR口径)
+    print("\n── 基线: PatchCore 全库 ──")
+    pc = AnomalibEngine(CFG)
+    pc.load()
+    assert pc.is_ready(), "PatchCore 加载失败"
+    t0 = time.time()
+    pc.train(train)
+    t_pc = time.time() - t0
+    pc_hold, _ = score_paths(pc, holdout, "PC留出")
+    pc_def, _ = score_paths(pc, defects, "PC缺陷")
+    pc_mf = {f"{e:.2f}": _recall_at_matched_fpr(pc_hold, pc_def, e)
+             for e in (0.05, 0.10, 0.20)}
+    out["patchcore_full"] = {
+        "train_s": round(t_pc, 1),
+        "auroc": auroc(pc_def, pc_hold),
+        "matched_fpr": {e: {"tau": round(t, 4),
+                            "fpr_hold": round(f, 4),
+                            "recall": round(r, 4)}
+                        for e, (t, f, r) in pc_mf.items()},
+        "selfcal": {
+            "tau": float(pc._calibrated_threshold),
+            "fpr_hold": float(np.mean(
+                pc_hold > pc._calibrated_threshold)),
+            "recall": float(np.mean(
+                pc_def > pc._calibrated_threshold)),
+        },
+    }
+    print(f"  建库 {t_pc:.1f}s, AUROC={out['patchcore_full']['auroc']:.4f}"
+          f"  匹配FPR@0.10: "
+          f"Recall={out['patchcore_full']['matched_fpr']['0.10']['recall']:.2%}")
+
+    # 验收判定: 匹配FPR@0.10 口径 (阈值锚定共同 holdout, 防退化)
+    sa_r10 = out["shots"]["1"]["matched_fpr"]["0.10"]["recall"]
+    pc_r10 = out["patchcore_full"]["matched_fpr"]["0.10"]["recall"]
+    ratio = sa_r10 / pc_r10 if pc_r10 > 0 else float("nan")
+    auroc_ratio = (out["shots"]["1"]["auroc"]
+                   / out["patchcore_full"]["auroc"])
+    out["acceptance"] = {
+        "criterion": ("1-shot Recall@匹配FPR=0.10 >= 0.85 x PatchCore 全库 "
+                      "(阈值锚定共同holdout正常图, 防自校准退化)"),
+        "sa_recall_1shot": sa_r10,
+        "pc_recall_full": pc_r10,
+        "ratio": round(ratio, 4),
+        "auroc_1shot": out["shots"]["1"]["auroc"],
+        "auroc_full": out["patchcore_full"]["auroc"],
+        "auroc_ratio": round(auroc_ratio, 4),
+        "pass": bool(ratio >= 0.85),
+    }
+    print(f"\n验收: 1-shot Recall={sa_r10:.1%} vs 全库 {pc_r10:.1%} "
+          f"(比值 {ratio:.1%}, 门槛 85%) | AUROC {out['shots']['1']['auroc']:.4f}"
+          f" vs {out['patchcore_full']['auroc']:.4f} → "
+          f"{'PASS' if out['acceptance']['pass'] else 'FAIL'}")
+    pc.unload()
+    return out
+
+
 # ─── main ──────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="多数据集验收评估")
     ap.add_argument("mode",
                     choices=["kolektor", "pcb", "yolo", "paired",
-                             "bootstrap"])
+                             "bootstrap", "subspacead"])
     ap.add_argument("root", nargs="?", default="")
     ap.add_argument("def_dir", nargs="?", default="")
     ap.add_argument("--name", default="")
@@ -496,7 +650,8 @@ def main():
 
     handlers = {"kolektor": mode_kolektor, "pcb": mode_pcb,
                 "yolo": mode_yolo, "paired": mode_paired,
-                "bootstrap": mode_bootstrap}
+                "bootstrap": mode_bootstrap,
+                "subspacead": mode_subspacead}
     # paired: root=ok_dir, def_dir=def_dir; bootstrap: root=dir
     if args.mode == "bootstrap":
         args.dir = args.root

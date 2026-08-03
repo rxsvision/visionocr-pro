@@ -181,6 +181,25 @@ qc:
     pca_dim: 64                   # PCA白化降维维度 (GMM稳定性)
     n_etalons: 8                  # GMM分量数 (正常模式原型数)
     np_epsilon: 0.10              # NP校准目标误报率 (与patchcore一致): 0.02→Recall5.8%/FPR0% | 0.10→Recall67.3%/FPR2.9%
+  # SubspaceAD 快速换线辅助通道 (v1.4.0, CVPR2026 Apache-2.0 算法适配):
+  # 1-4 张 OK 图极速建库 (旋转增广), PCA 子空间重构残差免训练检测。
+  # 定位: 辅助提示通道 — KolektorSDD 实测 1-shot 未达验收门槛
+  # (匹配FPR=0.10 口径 Recall 比值 56% < 85%, AUROC 0.81 vs 全库 0.89),
+  # 且快速模式自校准偏乐观 → 不给自主 OK/NG 判定, 仅分数+热力图,
+  # 强制人工复核; 不参与 Union OR, 不替代 PatchCore 主判。
+  subspacead:
+    enabled: true
+    model_id: "facebook/dinov2-small"  # 与 dinov2 引擎共享权重 (HF缓存离线可用)
+    input_size: 448               # 官方 ViT-S 消融配置 (32x32 patch grid)
+    layers: [-4, -5]              # 多层均值聚合 (官方 ViT-S 层选择)
+    pca_ev: 0.99                  # 累计解释方差截断 τ (成分数自动选择)
+    aug_count: 30                 # 快速模式每张支持图旋转增广数 (官方值)
+    fast_max_images: 4            # ≤此张数触发快速换线模式 (增广建库)
+    cal_frac: 0.10                # 增广视图留出作 NP 校准的比例
+    blur_sigma: 4.0               # 分数图高斯模糊 σ (官方)
+    top_frac: 0.01                # 图像级分数 = top-1% 像素均值 (mtop1p)
+    np_epsilon: 0.10              # 与 patchcore/dinov2 一致的零漏检取向
+    seed: 42                      # 增广/采样可复现种子
   # 双模型 Union OR (零漏检架构: 任一NG→最终NG, 误报人工复核兜底)
   union:
     enable_patchcore: true        # 表面异常: 划痕/凹陷/色差 (需OK样本建库)

@@ -141,6 +141,172 @@ def load_product_bank_dinov2(registry, product_name: str) -> bool:
     return engine.load_bank(bank_path_dinov2(product_name))
 
 
+# ─── SubspaceAD 辅助提示通道特征库 (v1.4.0) ─────────────────
+# 定位: 快速换线辅助 — 仅分数+热力图提示, 不给自主判定, 人工复核。
+_BANKS_SA_DIR = Path("data/banks_subspacead")
+
+
+def list_banks_subspace() -> list[str]:
+    """列出所有已建库的 SubspaceAD 产品名。"""
+    if not _BANKS_SA_DIR.exists():
+        return []
+    return sorted(p.stem for p in _BANKS_SA_DIR.glob("*.npz"))
+
+
+def bank_path_subspace(product_name: str) -> Path:
+    """获取产品 SubspaceAD 特征库文件路径。"""
+    return _BANKS_SA_DIR / f"{product_name}.npz"
+
+
+def delete_bank_subspace(product_name: str) -> bool:
+    """删除产品 SubspaceAD 特征库。"""
+    p = bank_path_subspace(product_name)
+    if p.exists():
+        p.unlink()
+        logger.info("已删除 SubspaceAD 特征库: %s", product_name)
+        return True
+    return False
+
+
+def register_subspace_bank(registry, product_name: str,
+                           image_paths: list[str]) -> dict:
+    """注册 OK 样本并构建 SubspaceAD 子空间库。
+
+    1-4 张触发快速换线模式 (旋转增广), ≥5 张标准模式。
+
+    Returns:
+        {"n_images", "pca_k", "mode", "saved_to", ...} 或 {"error": str}
+    """
+    engine = registry.get("subspace_ad")
+    if engine is None:
+        return {"error": "SubspaceAD 引擎未注册 (config: qc.subspacead)"}
+    if not engine.is_ready():
+        registry.ensure_loaded("subspace_ad")
+    if not engine.is_ready():
+        return {"error": "SubspaceAD 模型加载失败"}
+
+    result = engine.train(image_paths)
+    if result.get("error"):
+        return result
+
+    _BANKS_SA_DIR.mkdir(parents=True, exist_ok=True)
+    engine.save_bank(bank_path_subspace(product_name),
+                     product_name=product_name)
+    result["product_name"] = product_name
+    result["saved_to"] = str(bank_path_subspace(product_name))
+    return result
+
+
+def load_product_bank_subspace(registry, product_name: str) -> bool:
+    """加载指定产品的 SubspaceAD 特征库到引擎。"""
+    engine = registry.get("subspace_ad")
+    if engine is None:
+        return False
+    if not engine.is_ready():
+        registry.ensure_loaded("subspace_ad")
+    if not engine.is_ready():
+        return False
+    return engine.load_bank(bank_path_subspace(product_name))
+
+
+def run_subspace_detection(registry, image_path: str,
+                           product_name: str = "") -> dict:
+    """SubspaceAD 辅助提示检测 (不做自主判定)。
+
+    快速模式自校准偏乐观 (KolektorSDD 实测), 故本通道仅输出
+    分数 + 热力图叠加, 判定恒标注"仅供参考", 由人工复核。
+
+    Returns:
+        {"score", "anomaly_map", "pred_label" ("REVIEW"/"ERROR"),
+         "heatmap_overlay", "mode", ...}
+    """
+    import cv2
+    import numpy as np
+
+    engine = registry.get("subspace_ad")
+    if engine is None:
+        return {"pred_label": "ERROR",
+                "error": "SubspaceAD 引擎未注册 (config: qc.subspacead)"}
+    if not engine.is_ready():
+        registry.ensure_loaded("subspace_ad")
+    if not engine.is_ready():
+        return {"pred_label": "ERROR", "error": "SubspaceAD 模型加载失败"}
+
+    # 自动加载产品库 (无产品上下文时自动发现唯一库)
+    if not engine.has_bank:
+        if product_name:
+            if not load_product_bank_subspace(registry, product_name):
+                return {"pred_label": "ERROR",
+                        "error": f"产品「{product_name}」无 SubspaceAD 特征库, "
+                                 f"请先注册 OK 样本"}
+        else:
+            available = list_banks_subspace()
+            if len(available) == 1:
+                logger.info("SubspaceAD: 自动加载唯一特征库「%s」",
+                            available[0])
+                load_product_bank_subspace(registry, available[0])
+            elif len(available) > 1:
+                return {"pred_label": "ERROR",
+                        "error": f"存在 {len(available)} 个 SubspaceAD 特征库, "
+                                 f"请在工程师面板指定产品"}
+            else:
+                return {"pred_label": "ERROR",
+                        "error": "无 SubspaceAD 特征库, 请先注册 OK 样本"}
+    if not engine.has_bank:
+        return {"pred_label": "ERROR", "error": "特征库加载失败"}
+
+    from core.infer_stats import Timer
+    with Timer("subspace_ad"):
+        result = engine.infer(image_path)
+    if result.get("error"):
+        return result
+
+    # 热力图叠加 (辅助提示: 橙色 REVIEW 标注, 区别于 NG 红)
+    anomaly_map = result.get("anomaly_map")
+    overlay = None
+    if anomaly_map is not None:
+        from core.imutils import imread_unicode, imwrite_unicode
+        img = imread_unicode(image_path)
+        if img is not None:
+            if img.ndim == 2:  # 灰度图 (工业相机常见) → BGR 才能叠彩热力图
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            h, w = img.shape[:2]
+            amap = np.asarray(anomaly_map, dtype=np.float32)
+            heatmap = cv2.resize(amap, (w, h))
+            m0, m1 = heatmap.min(), heatmap.max()
+            heatmap = (heatmap - m0) / (m1 - m0) if m1 > m0 else heatmap * 0
+            heatmap_u8 = (heatmap * 255).astype(np.uint8)
+            heatmap_color = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_JET)
+            overlay = cv2.addWeighted(img, 0.5, heatmap_color, 0.5, 0)
+
+            score = result.get("score", 0)
+            mode = engine._bank_meta.get("mode", "standard")
+            # cv2.putText 无法渲染中文, 标注用纯 ASCII
+            tag = ("REVIEW" if mode == "fast"
+                   else f"{'NG' if result.get('pred_label') == 'NG' else 'OK'}")
+            color = (0, 165, 255) if mode == "fast" else (
+                (0, 0, 255) if tag == "NG" else (0, 200, 0))
+            cv2.putText(overlay, f"{tag} ({score:.3f})",
+                        (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.1, color, 3)
+            result["heatmap_overlay"] = overlay
+
+            # 审计保存: 热力图 PNG 持久化 (产线追溯)
+            try:
+                import time as _time
+                results_dir = Path(__file__).parent.parent / "results" \
+                    / "heatmaps_subspace"
+                results_dir.mkdir(parents=True, exist_ok=True)
+                ts = _time.strftime("%Y%m%d_%H%M%S")
+                stem = Path(image_path).stem
+                save_path = results_dir / f"{stem}_{ts}_SA.png"
+                imwrite_unicode(str(save_path), overlay)
+                result["heatmap_path"] = str(save_path)
+            except Exception as e:
+                logger.debug("SubspaceAD 热力图保存失败 (非致命): %s", e)
+    result.setdefault("heatmap_overlay", overlay)
+    return result
+
+
 def run_anomaly_detection(registry, image_path: str,
                           product_name: str = "",
                           threshold: float = 0.5) -> dict:
@@ -182,6 +348,8 @@ def run_anomaly_detection(registry, image_path: str,
         from core.imutils import imread_unicode, imwrite_unicode
         img = imread_unicode(image_path)
         if img is not None:
+            if img.ndim == 2:  # 灰度图 (工业相机常见) → BGR 才能叠彩热力图
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
             h, w = img.shape[:2]
             heatmap = cv2.resize(anomaly_map, (w, h))
             heatmap_u8 = (heatmap * 255).astype(np.uint8)

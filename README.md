@@ -29,7 +29,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 | 推理框架 | PyTorch 2.x + CUDA 12.6 | GPU 加速，FP16 推理 |
 | OCR 引擎 | RapidOCR / PaddleOCR-VL / OvisOCR2 / HunyuanOCR / MinerU | 多引擎 LRU 显存管理 |
 | LLM | Ollama (qwen3-vl:8b) + 云端 API (DeepSeek) | 分级路由 |
-| 视觉检测 | Grounding DINO + PatchCore + YOLO + DINOv2 | 零样本/少样本/Union 零漏检四源 OR |
+| 视觉检测 | Grounding DINO + PatchCore + YOLO + DINOv2 + SubspaceAD | 零样本/少样本/Union 零漏检四源 OR + 快速换线辅助 |
 | 条码识别 | pyzbar (ZBar) | OCR Tab 自动并行检测 |
 | 3D 融合 | Sizector 结构光 + pythonnet | 深度图 + RGB 融合检测 |
 | 数据存储 | SQLite (WAL) | 合同、应收、审计日志 |
@@ -72,7 +72,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **质检检测模式**（工程师模式三选一）：① 零样本 Grounding DINO（提示词驱动）｜② 少样本 PatchCore（OK 样本建库，可叠加 3D 深度融合）｜③ Union 零漏检（PatchCore + DINO + YOLO + DINOv2 四源 OR，任一 NG 即 NG；YOLO 按产品门控防跨域误报；DINOv2 与 PatchCore 特征互补降漏检；异常阈值 NP 校准，误报率统计可控）。漏检零容忍，误报由人工复核兜底。
+> **质检检测模式**（工程师模式四选一）：① 零样本 Grounding DINO（提示词驱动）｜② 少样本 PatchCore（OK 样本建库，可叠加 3D 深度融合）｜③ Union 零漏检（PatchCore + DINO + YOLO + DINOv2 四源 OR，任一 NG 即 NG；YOLO 按产品门控防跨域误报；DINOv2 与 PatchCore 特征互补降漏检；异常阈值 NP 校准，误报率统计可控）｜④ 快速换线辅助 SubspaceAD（1-4 张 OK 图极速建库，PCA 子空间免训练检测；**仅辅助提示**——KolektorSDD 实测 1-shot 未达验收门槛，不给自主判定，输出分数+热力图供人工复核）。漏检零容忍，误报由人工复核兜底。
 
 > **质检看板**（可选）：质检结果落库后可一键启动 Datasette 看板（日统计 + NG 明细 + 缺陷图回溯）：`pip install datasette` 后 `python scripts/qc_dashboard.py --port 8901`。检测图入库前自动持久化到 `data/qc_images/`（内容哈希命名去重），Gradio 临时文件清理后看板图片链接不失效。
 
@@ -88,7 +88,7 @@ VisionOCR Pro 是面向制造业的一站式视觉智能平台，将 OCR 文字�
 | PaddleOCR-VL | 自然场景 OCR | ~4 GB | ~800 MB | pip 自动下载 (paddleocr) |
 | Grounding DINO (tiny) | 零样本缺陷检测 | ~2.5 GB | 1.2 GB | transformers 自动缓存 |
 | PatchCore (WideResNet50) | 少样本异常检测 | ~1.5 GB | ~100 MB | 代码内置 (ImageNet 预训练) |
-| DINOv2-S/14 | 少样本异常检测 (Union 第4源) | ~1 GB | 85 MB | transformers 自动缓存 (Apache-2.0) |
+| DINOv2-S/14 | 少样本异常检测 (Union 第4源) + SubspaceAD 辅助共享权重 | ~1 GB | 85 MB | transformers 自动缓存 (Apache-2.0) |
 | HunyuanOCR | 手写体 OCR (需 24GB+) | ~12 GB | ~12 GB | `python scripts/download_models.py hunyuan` |
 
 > **硬件建议**: RTX 4070 Ti (12 GB) 可运行除 HunyuanOCR 外的所有引擎。HunyuanOCR 需要 24 GB+ 显存 (RTX 4090 / A5000)。
@@ -295,7 +295,7 @@ Key advantages:
 | Inference | PyTorch 2.x + CUDA 12.6 | GPU-accelerated, FP16 |
 | OCR Engines | RapidOCR / PaddleOCR-VL / OvisOCR2 / HunyuanOCR / MinerU | LRU VRAM management |
 | LLM | Ollama (qwen3-vl:8b) + Cloud API (DeepSeek) | Tiered routing |
-| Vision | Grounding DINO + PatchCore + YOLO + DINOv2 | Zero-shot / few-shot / Union zero-miss (4-source OR) |
+| Vision | Grounding DINO + PatchCore + YOLO + DINOv2 + SubspaceAD | Zero-shot / few-shot / Union zero-miss (4-source OR) + fast line-change advisory |
 | Barcode | pyzbar (ZBar) | Auto parallel detection in OCR tab |
 | 3D Fusion | Sizector structured light + pythonnet | Depth + RGB fusion |
 | Storage | SQLite (WAL) | Contracts, receivables, audit logs |
@@ -314,7 +314,7 @@ Model weights are distributed across runtime-managed locations (not bundled in t
 | PaddleOCR-VL | Natural scene OCR | ~4 GB | ~800 MB | Auto via pip (paddleocr) |
 | Grounding DINO (tiny) | Zero-shot defect detection | ~2.5 GB | 1.2 GB | Auto via transformers cache |
 | PatchCore (WideResNet50) | Few-shot anomaly detection | ~1.5 GB | ~100 MB | Built-in (ImageNet pretrained) |
-| DINOv2-S/14 | Few-shot anomaly detection (Union 4th source) | ~1 GB | 85 MB | Auto via transformers cache (Apache-2.0) |
+| DINOv2-S/14 | Few-shot anomaly detection (Union 4th source) + shared weights with SubspaceAD advisory | ~1 GB | 85 MB | Auto via transformers cache (Apache-2.0) |
 | HunyuanOCR | Handwriting OCR (requires 24 GB+) | ~12 GB | ~12 GB | `python scripts/download_models.py hunyuan` |
 
 > **Hardware**: RTX 4070 Ti (12 GB) runs all engines except HunyuanOCR, which requires 24 GB+ VRAM (RTX 4090 / A5000).

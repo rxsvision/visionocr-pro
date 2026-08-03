@@ -63,6 +63,7 @@ class EngineRegistry:
         ("engines.vision.sam3", "SAM3Engine"),
         ("engines.vision.anomalib_engine", "AnomalibEngine"),
         ("engines.vision.dinov2_anomaly", "DINOv2AnomalyEngine"),
+        ("engines.vision.subspace_ad", "SubspaceADEngine"),
         ("engines.vision.barcode", "BarcodeEngine"),
         ("engines.pose.rtmpose", "RTMPoseEngine"),
         ("engines.pose.ctrgcn", "CTRGCNEngine"),

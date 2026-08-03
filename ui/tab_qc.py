@@ -23,6 +23,7 @@ from core.defect_detector import (
 from core.anomaly_bank import (
     list_banks, bank_exists, delete_bank,
     register_ok_samples, run_anomaly_detection,
+    list_banks_subspace, register_subspace_bank, run_subspace_detection,
 )
 
 _registry = None
@@ -77,11 +78,14 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                 gr.Markdown("### 检测模式")
                 detect_mode = gr.Radio(
                     choices=["零样本 (Grounding DINO)", "少样本 (PatchCore)",
-                             "Union 零漏检 (三源OR)"],
+                             "Union 零漏检 (三源OR)",
+                             "快速换线辅助 (SubspaceAD)"],
                     value="零样本 (Grounding DINO)",
                     label="检测模式",
                     info="零样本: 提示词驱动 | 少样本: OK样本建库 | "
-                         "Union: PatchCore+DINO+YOLO 任一NG即NG (漏检零容忍)",
+                         "Union: PatchCore+DINO+YOLO 任一NG即NG (漏检零容忍) | "
+                         "SubspaceAD辅助: 1-4张OK图极速建库, 仅分数+热力图提示, "
+                         "不做自主判定, 人工复核",
                 )
                 gr.Markdown("### 检测配置")
                 recipe_choice = gr.Dropdown(
@@ -144,6 +148,29 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                 pc_register_btn = gr.Button("📦 注册建库", variant="secondary")
                 pc_status = gr.Markdown("")
 
+                gr.Markdown("---")
+                gr.Markdown("### 快速换线注册 (SubspaceAD 辅助通道)")
+                gr.Markdown(
+                    "_1-4 张 OK 图即可建库 (旋转增广), 仅作辅助提示; "
+                    "正式量产请补足 ≥10 张并改用 PatchCore 主判。_")
+                sa_product = gr.Dropdown(
+                    label="产品特征库 (辅助通道)",
+                    choices=["(新建)"] + list_banks_subspace(),
+                    value="(新建)",
+                )
+                sa_product_name = gr.Textbox(
+                    label="新产品名称 (新建时填写)",
+                    placeholder="如: 新品首件_型号B",
+                )
+                sa_ok_upload = gr.File(
+                    label="上传 OK 样本 (快速换线 1~4 张; ≥10 张走标准建库)",
+                    file_count="multiple",
+                    file_types=[".png", ".jpg", ".jpeg", ".bmp", ".tiff"],
+                )
+                sa_register_btn = gr.Button("📦 注册建库 (辅助)",
+                                            variant="secondary")
+                sa_status = gr.Markdown("")
+
         # ─── 右列: 全部输出/结果 ─────────────────────────────
         with gr.Column(scale=3):
             gr.Markdown("### 检测结果")
@@ -178,7 +205,7 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
     detect_btn.click(
         fn=_run_detect,
         inputs=[qc_image, prompt_input, threshold_slider, detect_mode, pc_product,
-                fusion_enable, depth_threshold, fusion_mode_radio],
+                fusion_enable, depth_threshold, fusion_mode_radio, sa_product],
         outputs=[result_image, verdict_box, score_box, count_box,
                  detail_table, status_msg, log_box],
     )
@@ -217,6 +244,11 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
         inputs=[pc_product, pc_product_name, pc_ok_upload],
         outputs=[pc_status, pc_product],
     )
+    sa_register_btn.click(
+        fn=_register_subspace_bank,
+        inputs=[sa_product, sa_product_name, sa_ok_upload],
+        outputs=[sa_status, sa_product],
+    )
 
     # ─── 模式切换 → 工程师面板可见性 ─────────────────────────
     if mode_toggle is not None:
@@ -231,7 +263,8 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
 @safe_generator(lambda e: (None, "ERROR", "—", "—", [], "",
                           f"[ERROR] 未捕获异常: {e}"))
 def _run_detect(image_path, prompt, threshold, mode, pc_product,
-                fusion_enable=False, depth_threshold=0.5, fusion_mode="OR (高召回, 推荐)"):
+                fusion_enable=False, depth_threshold=0.5, fusion_mode="OR (高召回, 推荐)",
+                sa_product=""):
     """一键检测 (Generator): 流式输出进度日志 + 最终结果。"""
     import time as _time
     global _last_union
@@ -257,7 +290,9 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
     # ─── 3D 深度融合模式 ─────────────────────────────────────
     global _last_depth_frame
-    if fusion_enable and _last_depth_frame is not None and "PatchCore" not in (mode or ""):
+    if fusion_enable and _last_depth_frame is not None \
+            and "PatchCore" not in (mode or "") \
+            and "SubspaceAD" not in (mode or ""):
         yield _EMPTY[:6] + (log("▶ 3D 深度融合检测启动..."),)
         result = _run_fusion_detect(registry, image_path, prompt, threshold,
                                     depth_threshold, fusion_mode)
@@ -288,6 +323,33 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         table = [["1", "异常热力图", f"{score:.4f}", "见标注图"]]
         status = f"PatchCore 检测 · 产品: {product or '默认'} · 阈值: {threshold}"
         yield (overlay, verdict_str, f"{score:.4f}", "1" if verdict == "NG" else "0",
+               table, status, log(f"✓ {verdict_str}"))
+        return
+
+    # ─── SubspaceAD 快速换线辅助模式 (不给自主判定, 人工复核) ──
+    if "SubspaceAD" in (mode or ""):
+        yield _EMPTY[:6] + (log("▶ SubspaceAD 辅助提示 (快速换线, 仅供参考)..."),)
+        product = "" if sa_product in ("(新建)", None) else (sa_product or "")
+        result = run_subspace_detection(registry, image_path,
+                                        product_name=product)
+        if result.get("error"):
+            yield (None, "ERROR", "—", "—", [],
+                   f"⚠ {result['error']}", log(f"✗ {result['error']}"))
+            return
+
+        score = result.get("score", 0)
+        overlay = result.get("heatmap_overlay")
+        pred = result.get("pred_label")
+        if pred == "REVIEW":
+            verdict_str = f"◐ 仅供参考 (分数 {score:.3f}, 需人工复核)"
+        elif pred == "NG":
+            verdict_str = f"✗ NG (异常分数 {score:.3f})"
+        else:
+            verdict_str = f"✓ OK (分数 {score:.3f})"
+        table = [["1", "异常热力图 (辅助)", f"{score:.4f}", "见标注图"]]
+        status = (f"SubspaceAD 辅助提示 · 产品: {product or '自动'} · "
+                  f"本通道仅供参考, 最终判定以人工/主判通道为准")
+        yield (overlay, verdict_str, f"{score:.4f}", "—",
                table, status, log(f"✓ {verdict_str}"))
         return
 
@@ -695,4 +757,48 @@ def _register_bank(pc_product, pc_product_name, files):
                 f"  保存位置: {result.get('dinov2_saved_to', '')}")
     elif result.get("dinov2_error"):
         msg += f"\n- DINOv2 特征库: 建立失败 ({result['dinov2_error']}), 不影响 PatchCore"
+    return msg, gr.update(choices=banks, value=product)
+
+
+def _register_subspace_bank(sa_product, sa_product_name, files):
+    """注册 OK 样本, 构建 SubspaceAD 子空间库 (辅助通道)。"""
+    if sa_product and sa_product != "(新建)":
+        product = sa_product
+    elif sa_product_name and sa_product_name.strip():
+        product = sa_product_name.strip()
+    else:
+        return "⚠ 请选择已有产品或输入新产品名称。", gr.update()
+
+    if not files:
+        return "⚠ 请上传 OK 样本图片 (快速换线 1~4 张, 标准建库建议 ≥10 张)。", gr.update()
+
+    paths = []
+    for f in files:
+        p = f.name if hasattr(f, "name") else str(f)
+        if os.path.isfile(p):
+            paths.append(p)
+    if not paths:
+        return "⚠ 无有效图片。", gr.update()
+
+    registry = _registry
+    if registry is None:
+        return "⚠ 引擎未初始化。", gr.update()
+
+    result = register_subspace_bank(registry, product, paths)
+    if result.get("error"):
+        return f"⚠ 建库失败: {result['error']}", gr.update()
+
+    banks = ["(新建)"] + list_banks_subspace()
+    fast = result.get("mode") == "fast"
+    mode_txt = ("快速换线模式 (旋转增广)" if fast else "标准模式")
+    msg = (f"✓ 产品「{product}」SubspaceAD 特征库已建立 ({mode_txt})\n\n"
+           f"- OK 样本: {result.get('n_images', 0)} 张\n"
+           f"- 增广视图入池: {result.get('n_augmented', 0)} 个\n"
+           f"- PCA 子空间: {result.get('pca_k', 0)} 维 "
+           f"(累计解释方差 {result.get('pca_ev_achieved', 0):.3f})\n"
+           f"- 保存位置: {result.get('saved_to', '')}")
+    if fast:
+        msg += ("\n\n⚠ 快速换线模式仅为辅助提示: 自校准偏乐观, "
+                "检测结果显示\"仅供参考\", 须人工复核; "
+                "正式量产请补足 ≥10 张 OK 图并改用 PatchCore 主判。")
     return msg, gr.update(choices=banks, value=product)
