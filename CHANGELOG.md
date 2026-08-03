@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Registry 并发模型重构: per-engine 锁替代全局锁 (模型加载不再阻塞其他引擎), 新增 infer 租约机制防止推理中引擎被驱逐/卸载 (修复 C-1)
+- 拆分 `defect_detector.py` 上帝模块: 配方 → `core.recipes`, 可视化 → `core.qc_drawing`, 落库 → `core.qc_persist`, 原模块仅保留检测流程并 re-export 保持兼容
 
 ### Fixed
 
@@ -18,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `tests/test_registry_concurrency.py`: Registry 并发/租约/驱逐 12 项用例
+- `tests/test_union_detection.py`: 四源 Union 检测/融合契约 12 项用例
+- SQLite 补 9 个查询驱动索引 (qc_results/ocr_results 时间序、verdict、外键等)
 - 补建 v1.4.1 GitHub Release
 
 ## [1.4.1] - 2026-08-04
