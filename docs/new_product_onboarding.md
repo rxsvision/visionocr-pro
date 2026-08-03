@@ -95,6 +95,28 @@ YOLO + 零样本冷启动），要求 **Recall = 100%**。任何漏检都必须�
 
 两条件同时满足，产品方可投入产线自动判定；否则回到第 1/3 步补样本或调 ε。
 
+## 可选：YOLO 结构缺陷通道（标注式，§5.4）
+
+异常检测（PatchCore/DINOv2）对微观**结构**缺陷（缺孔/短路/毛刺/开路等）
+判别力有限；若该产品有 ≥50 张可标注缺陷图，可启用 YOLO 少样本通道作为
+Union 第三检测源：
+
+1. 标注：框出结构缺陷（LabelImg 等，VOC XML 或 YOLO txt 均可）；
+2. 数据准备：`python finetune/prepare_pcb_data.py --src <数据集路径>`
+   （PCB 流程通用化后同样适用其他产品）；
+3. 一键精调：`python finetune/train_yolo.py`（默认 **YOLO11n** 基线，
+   `--model yolov8n/s/m/x` 兼容旧权重；微缺陷建议 `--imgsz 1280`）；
+4. 权重落盘：将 `finetune/output_yolo/*/weights/best.pt` 复制为
+   `models/yolo/{产品名}.pt`，产品门控（`core/yolo_products.py`）自动启用。
+
+约束：
+
+- **无通用兜底权重**——未训练的产品不会套用其他产品的 YOLO 权重
+  （跨域误报防护），Union 自动跳过该源，不影响其余检测链；
+- ultralytics 为 AGPL-3.0，仅在启用本通道时需安装（`requirements.txt`
+  中已注释，按需 `pip install "ultralytics>=8.3"`）；
+- 投产验收仍走第 4/5 步：YOLO 源并入 Union 后重跑 NG 回归。
+
 ## 常见误区（实测验证）
 
 1. **"我有一批 NG 图，先跑起来看看"** —— NG-only 数据建不了 OK 库，跑出来的
@@ -117,6 +139,8 @@ YOLO + 零样本冷启动），要求 **Recall = 100%**。任何漏检都必须�
 - [ ] 已知 NG 集 Recall = 100%
 - [ ] OK 验证集误报率 ≤ ε
 - [ ] 产品名称/料号与 MES 工单字段一致
+- [ ] （可选）YOLO 结构缺陷通道：≥50 张标注图精调完成，
+      权重已落盘 `models/yolo/{产品名}.pt` 并复跑 NG 回归
 
 ## 关联文档与代码
 
@@ -125,6 +149,8 @@ YOLO + 零样本冷启动），要求 **Recall = 100%**。任何漏检都必须�
 - 校准：`core/np_calibration.py`（`NPCalibrator`，n<100 自动警告）
 - 校准协议：`core/calibration_protocol.py`（`recalibrate_product`，§6.2 n_cal 扩充）
 - 分阶段融合：`core/fusion.py`（Stage 1/2/3 与漂移监控）
+- YOLO 结构缺陷通道：`finetune/train_yolo.py`（YOLO11 基线训练）、
+  `core/yolo_products.py`（按产品权重门控）
 - UI 入口：`ui/tab_qc.py`（产品登记 / 校准协议）
 - 验收脚本示例：`scripts/eval_np_calibration.py`、`scripts/eval_acceptance.py`
   （`fusion55` / `calibration` 模式）

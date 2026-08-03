@@ -138,7 +138,7 @@ chmod +x setup.sh && ./setup.sh
 │  └── PatchCore WideResNet50   ~100MB  (首次运行 torchvision 下载) │
 │                                                                   │
 │  本机训练产物 (models/yolo/)                                      │
-│  └── YOLOv8 缺陷检测权重       ~24MB/产品 (train_yolo.py 训练+命名)│
+│  └── YOLO11 缺陷检测权重       ~24MB/产品 (train_yolo.py 训练+命名)│
 │                                                                   │
 ├─────────────────────────────────────────────────────────────────┤
 │  总计: ~9GB    设计原则: 各工具管各自模型, 仓库只存代码+非托管权重  │
@@ -161,6 +161,7 @@ YOLO 结构缺陷检测权重（`best.pt`，~24MB）**既不随仓库分发，�
 python finetune/prepare_pcb_data.py --src "<PCB_DATASET路径>"
 
 # 2. 训练：COCO 预训练权重微调（RTX 4070 Ti 约 15 分钟，早停）
+#    默认 YOLO11n 基线；--model yolov8n/s/m/x 兼容旧版权重
 python finetune/train_yolo.py --epochs 120 --batch 8 --imgsz 1280
 ```
 

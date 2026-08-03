@@ -181,6 +181,9 @@ qc:
     pca_dim: 64                   # PCA白化降维维度 (GMM稳定性)
     n_etalons: 8                  # GMM分量数 (正常模式原型数)
     np_epsilon: 0.10              # NP校准目标误报率 (与patchcore一致): 0.02→Recall5.8%/FPR0% | 0.10→Recall67.3%/FPR2.9%
+    # §5.1 PixOOD 思想借鉴升级点 (dvab A/B 实测未全达标, 默认关闭):
+    # reinit_dead_etalons: false  # P1 死etalon重初始化: Recall 67.3→80.8% 但 FPR 2.86→5.71%, 仅Recall优先场景试用
+    # per_etalon_np: false        # P4 per-etalon局部NP归一化: AUROC≈基线 但 Recall -9.6pts
   # SubspaceAD 快速换线辅助通道 (v1.4.0, CVPR2026 Apache-2.0 算法适配):
   # 1-4 张 OK 图极速建库 (旋转增广), PCA 子空间重构残差免训练检测。
   # 定位: 辅助提示通道 — KolektorSDD 实测 1-shot 未达验收门槛

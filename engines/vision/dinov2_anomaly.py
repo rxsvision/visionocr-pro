@@ -228,6 +228,90 @@ class DINOv2AnomalyEngine(BaseEngine):
                         "n_cal=%d", p99, self._calibrated_threshold,
                         len(cal_scores))
 
+    # ─── §5.1 PixOOD 思想借鉴 (自研实现, 无代码继承) ─────────
+    def _reinit_dead_etalons(self, Xw: np.ndarray, gmm):
+        """P1 借鉴: 死 etalon 重初始化 + 再拟合。
+
+        权重低于 dead_weight_frac/K 的分量视为"死分量"(分到的正常
+        样本过少 → 该正常模式欠表达, 推理时易误报)。把死分量的均值
+        重新播种到当前 NLL 最高 (最欠表达) 的 1% 样本上, 再整体再拟合,
+        最多 reinit_rounds 轮。
+        """
+        from sklearn.mixture import GaussianMixture
+        rng = np.random.default_rng(2026)
+        K = gmm.n_components
+        min_w = self._dead_weight_frac / K
+        for r in range(self._reinit_rounds):
+            dead = np.where(gmm.weights_ < min_w)[0]
+            if len(dead) == 0:
+                break
+            nll = -gmm.score_samples(Xw)
+            n_top = max(len(dead), int(len(Xw) * 0.01), 1)
+            top_idx = np.argpartition(nll, -n_top)[-n_top:]
+            means = gmm.means_.copy()
+            pick = rng.choice(top_idx, size=len(dead),
+                              replace=len(dead) > len(top_idx))
+            means[dead] = Xw[pick]
+            gmm = GaussianMixture(n_components=K, covariance_type="diag",
+                                  reg_covar=1e-4, random_state=2026,
+                                  n_init=1, max_iter=200,
+                                  means_init=means)
+            gmm.fit(Xw)
+            logger.info("§5.1 死etalon重初始化: 第%d轮, %d 个死分量 "
+                        "(weights<%.3f) 已重播种", r + 1, len(dead), min_w)
+        return gmm
+
+    def _gmm_component_weighted_logprob(self, Xw: np.ndarray) -> np.ndarray:
+        """逐分量加权对数似然 ln(π_k N(x|μ_k,Σ_k)), (n, K)。
+
+        对角高斯闭式解自包含实现 (不依赖 sklearn 私有 API)。
+        """
+        means = self._gmm.means_          # (K, D)
+        covars = self._gmm.covariances_   # (K, D)
+        weights = self._gmm.weights_      # (K,)
+        D = Xw.shape[1]
+        log_det = np.sum(np.log(covars), axis=1)                  # (K,)
+        log_w = np.log(np.clip(weights, 1e-300, None))            # (K,)
+        out = np.empty((Xw.shape[0], means.shape[0]),
+                       dtype=np.float64)
+        # 分块计算, 控制 (n,K,D) 中间张量内存
+        for s in range(0, Xw.shape[0], 8192):
+            xb = Xw[s:s + 8192]
+            diff = xb[:, None, :] - means[None, :, :]
+            maha = np.sum(diff * diff / covars[None, :, :], axis=2)
+            out[s:s + 8192] = -0.5 * (
+                D * np.log(2.0 * np.pi) + log_det[None, :] + maha) \
+                + log_w[None, :]
+        return out
+
+    def _fit_etalon_np_stats(self, Xw_fit: np.ndarray) -> None:
+        """P4 借鉴: per-etalon 局部 NP 归一化统计。
+
+        GMM 各分量的局部密度不同 → 同一"正常程度"的 patch 在不同
+        etalon 下原始 NLL 系统性偏高/偏低。对训练 patch 按归属 etalon
+        (最大分量后验) 统计 NLL 的中位数(mu)与 MAD(sigma), 推理时做
+        局部归一化, 与全局统一 NP 阈值构成双策略。
+        """
+        wlp = self._gmm_component_weighted_logprob(Xw_fit)
+        nll_all = -self._gmm.score_samples(Xw_fit)   # 统一口径 NLL
+        assign = wlp.argmax(axis=1)
+        K = self._gmm.n_components
+        mu = np.zeros(K)
+        sigma = np.ones(K)
+        for k in range(K):
+            sel = nll_all[assign == k]
+            if len(sel) >= 5:
+                med = float(np.median(sel))
+                mad = float(np.median(np.abs(sel - med)))
+                mu[k] = med
+                sigma[k] = max(mad * 1.4826, 1e-3)  # MAD→σ, 防退化
+            else:
+                mu[k] = float(np.median(nll_all))
+        self._etalon_np_mu = mu
+        self._etalon_np_sigma = sigma
+        logger.info("§5.1 per-etalon NP 统计: mu=%s sigma=%s",
+                    np.round(mu, 2).tolist(), np.round(sigma, 3).tolist())
+
     # ─── 推理 ───────────────────────────────────────────────
     def infer(self, image: Any, **kwargs) -> dict:
         """检测单张图像, 返回异常分数 + 热力图 (与 AnomalibEngine 对齐)。"""
@@ -286,13 +370,22 @@ class DINOv2AnomalyEngine(BaseEngine):
         return float(np.sort(nll)[-k:].mean())
 
     def _patch_nll(self, image: Any) -> Optional[np.ndarray]:
-        """逐 patch 负对数似然。"""
+        """逐 patch 负对数似然 (开启 per-etalon NP 时做局部归一化)。"""
         feat = self._extract_features(image)
         if feat is None:
             return None
         Xw = self._pca.transform(feat.astype(np.float32))
         loglik = self._gmm.score_samples(Xw)
-        return -loglik
+        nll = -loglik
+        if self._etalon_np_mu is not None:
+            # §5.1 P4: 按归属 etalon 局部归一化 (双策略之"per-class";
+            # 全局统一 NP 阈值仍在 NP 校准层兜底)
+            wlp = self._gmm_component_weighted_logprob(Xw)
+            assign = wlp.argmax(axis=1)
+            mu = self._etalon_np_mu[assign]
+            sigma = self._etalon_np_sigma[assign]
+            nll = (nll - mu) / sigma
+        return nll
 
     def _nll_to_map(self, nll: np.ndarray) -> tuple[np.ndarray, int]:
         grid_total = self._img_size // 14
@@ -422,6 +515,9 @@ class DINOv2AnomalyEngine(BaseEngine):
             "gmm_covars": self._gmm.covariances_,
             **{f"meta_{k}": v for k, v in self._bank_meta.items()},
         }
+        if self._etalon_np_mu is not None and self._etalon_np_sigma is not None:
+            save_kwargs["etalon_np_mu"] = self._etalon_np_mu
+            save_kwargs["etalon_np_sigma"] = self._etalon_np_sigma
         if self._calibrated_threshold is not None:
             save_kwargs["calibrated_threshold"] = self._calibrated_threshold
         if self._np_calibrator is not None and self._np_calibrator.is_fitted:
@@ -465,6 +561,18 @@ class DINOv2AnomalyEngine(BaseEngine):
 
             self._pca = pca
             self._gmm = gmm
+            self._etalon_np_mu = None
+            self._etalon_np_sigma = None
+            if ("etalon_np_mu" in data.files
+                    and "etalon_np_sigma" in data.files):
+                mu = np.asarray(data["etalon_np_mu"], dtype=np.float64)
+                sg = np.asarray(data["etalon_np_sigma"], dtype=np.float64)
+                if mu.shape == (m,) and sg.shape == (m,):
+                    self._etalon_np_mu = mu
+                    self._etalon_np_sigma = sg
+                else:
+                    logger.warning("etalon NP 统计维度不符 (%s/%s vs %d), "
+                                   "忽略", mu.shape, sg.shape, m)
             self._bank_meta = {
                 k.replace("meta_", ""): data[k].item()
                 for k in data.files if k.startswith("meta_")
@@ -504,6 +612,8 @@ class DINOv2AnomalyEngine(BaseEngine):
         self._np_calibrator = None
         self._train_scores = []
         self._calibrated_threshold = None
+        self._etalon_np_mu = None
+        self._etalon_np_sigma = None
         self.state = EngineState.UNLOADED
         try:
             import torch

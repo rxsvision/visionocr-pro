@@ -43,8 +43,9 @@ pyzbar>=0.1.9
 
 # YOLO 少样本结构缺陷检测 (engines/vision/yolo_defect.py, 可选)
 # ⚠ AGPL-3.0 许可; 仅在训练/运行 YOLO 检测源时需要 (Union 零漏检第三源, 按产品门控)。
+#   ≥8.3 提供 YOLO11 训练基线 (finetune/train_yolo.py 默认 yolo11n), 同时兼容加载旧 YOLOv8 权重。
 #   训练流程见 DEPLOY.md 4.1; 不安装时 Union 自动跳过 YOLO 源, 不影响其他功能。
-# ultralytics>=8.2
+# ultralytics>=8.3
 
 # 3D 深度相机 Sizector (Phase 4C, optional)
 # 仅 Windows + .NET Framework 4.7.2+ 需要; 通过 .NET wrapper 调用 MPSizectorS SDK

@@ -1,15 +1,19 @@
 """PCB 缺陷 YOLO 少样本训练编排器
 
 设计:
-    - 基于 ultralytics YOLOv8, COCO 预训练权重微调
-    - 默认 yolov8n (快, 少样本足够); 可 --model yolov8s/m 提精度
+    - 基于 ultralytics YOLO11, COCO 预训练权重微调 (§5.4: v11 为基线,
+      --model yolov8n/s/m 传旧版权重仍兼容)
+    - 默认 yolo11n (快, 少样本足够); 可 --model yolo11s/m 提精度
     - 训练在独立进程运行 (python finetune/train_yolo.py), 与主应用 torch 上下文隔离
     - 最优权重输出到 finetune/output_yolo/pcb_defect/weights/best.pt
+    - 投产: 复制 best.pt 到 models/yolo/{产品名}.pt 激活产品门控
+      (core/yolo_products.py, 无通用兜底权重防跨域误报)
 
 用法:
     python finetune/train_yolo.py --epochs 100 --batch 16 --imgsz 1280
     python finetune/train_yolo.py --epochs 2 --imgsz 640   # 快速冒烟
-    python finetune/train_yolo.py --model yolov8s --epochs 150
+    python finetune/train_yolo.py --model yolo11s --epochs 150
+    python finetune/train_yolo.py --model yolov8n --epochs 100  # v8 兼容
 
 前置:
     python finetune/prepare_pcb_data.py --src "<PCB_DATASET路径>"
@@ -38,7 +42,7 @@ def train(model: str, epochs: int, batch: int, imgsz: int,
     print(f"  设备: {device}")
 
     m = YOLO(f"{model}.yaml") if not model.endswith(".pt") else YOLO(model)
-    # 加载 COCO 预训练权重 (yolov8n.pt 等自动下载)
+    # 加载 COCO 预训练权重 (yolo11n.pt / yolov8n.pt 等自动下载)
     if not model.endswith(".pt"):
         m = YOLO(f"{model}.pt")
 
@@ -79,8 +83,9 @@ def train(model: str, epochs: int, batch: int, imgsz: int,
 
 def main():
     parser = argparse.ArgumentParser(description="PCB 缺陷 YOLO 训练")
-    parser.add_argument("--model", default="yolov8n",
-                        help="yolov8n/s/m/x 或自有 .pt 权重 (默认 yolov8n)")
+    parser.add_argument("--model", default="yolo11n",
+                        help="yolo11n/s/m (默认基线) 或 yolov8n/s/m/x (兼容) "
+                             "或自有 .pt 权重 (默认 yolo11n)")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--imgsz", type=int, default=1280,

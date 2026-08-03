@@ -188,3 +188,93 @@ class TestRegistryIntegration:
         assert eng.state == EngineState.UNLOADED
         assert not eng.has_bank
         assert eng._np_calibrator is None
+
+
+# ─── §5.1 PixOOD 思想借鉴 (P1 重初始化 / P4 局部NP) ─────────
+class TestPixOODUpgrade:
+    def test_component_logprob_matches_sklearn(self, cfg, rng):
+        from sklearn.mixture import GaussianMixture
+        eng = make_engine(cfg, rng)
+        eng.train([f"img_{i}.jpg" for i in range(15)])
+        X = rng.standard_normal((500, eng._pca.n_components_))
+        ref = eng._gmm._estimate_weighted_log_prob(X)
+        ours = eng._gmm_component_weighted_logprob(X)
+        assert np.allclose(ref, ours, atol=1e-8)
+
+    def test_reinit_dead_etalons_runs_and_keeps_bank(self, cfg, rng):
+        # dead_weight_frac=3.0 → min_w=0.75, 强制每轮都有"死分量"重播种
+        cfg["qc"]["dinov2"]["reinit_dead_etalons"] = True
+        cfg["qc"]["dinov2"]["dead_weight_frac"] = 3.0
+        cfg["qc"]["dinov2"]["reinit_rounds"] = 2
+        eng = make_engine(cfg, rng)
+        meta = eng.train([f"img_{i}.jpg" for i in range(15)])
+        assert not meta.get("error")
+        assert meta["reinit_dead"] is True
+        assert eng.has_bank
+        # 重初始化后推理链路正常
+        r = eng.infer("probe.jpg")
+        assert r["pred_label"] in ("OK", "NG")
+
+    def test_per_etalon_np_stats_fitted(self, cfg, rng):
+        cfg["qc"]["dinov2"]["per_etalon_np"] = True
+        eng = make_engine(cfg, rng)
+        meta = eng.train([f"img_{i}.jpg" for i in range(15)])
+        assert meta["per_etalon_np"] is True
+        K = eng._gmm.n_components
+        assert eng._etalon_np_mu.shape == (K,)
+        assert eng._etalon_np_sigma.shape == (K,)
+        assert (eng._etalon_np_sigma > 0).all()
+
+    def test_per_etalon_np_preserves_separation(self, cfg, rng):
+        cfg["qc"]["dinov2"]["per_etalon_np"] = True
+        eng = make_engine(cfg, rng)
+        eng.train([f"img_{i}.jpg" for i in range(15)])
+        normal_scores = [eng.infer(f"n{i}.jpg")["score"] for i in range(5)]
+        eng_anom = make_engine(cfg, np.random.default_rng(7),
+                               anomaly_shift=3.0)
+        eng_anom._pca, eng_anom._gmm = eng._pca, eng._gmm
+        eng_anom._calibrated_threshold = eng._calibrated_threshold
+        eng_anom._np_calibrator = eng._np_calibrator
+        eng_anom._etalon_np_mu = eng._etalon_np_mu
+        eng_anom._etalon_np_sigma = eng._etalon_np_sigma
+        anom_scores = [eng_anom.infer(f"a{i}.jpg")["score"]
+                       for i in range(5)]
+        assert min(anom_scores) > max(normal_scores), \
+            f"局部归一化后异常分数未分离: {anom_scores} vs {normal_scores}"
+
+    def test_per_etalon_np_persistence_roundtrip(self, cfg, rng, tmp_path):
+        cfg["qc"]["dinov2"]["per_etalon_np"] = True
+        eng = make_engine(cfg, rng)
+        eng.train([f"img_{i}.jpg" for i in range(15)])
+        probe = "probe.jpg"
+        s1 = eng.infer(probe)["score"]
+        bank = tmp_path / "bank.npz"
+        eng.save_bank(bank, product_name="t")
+
+        eng2 = make_engine(cfg, np.random.default_rng(42))
+        assert eng2.load_bank(bank)
+        assert eng2._etalon_np_mu is not None
+        assert np.allclose(eng2._etalon_np_mu, eng._etalon_np_mu)
+        assert np.allclose(eng2._etalon_np_sigma, eng._etalon_np_sigma)
+        assert abs(eng2.infer(probe)["score"] - s1) < 1e-3
+
+    def test_old_bank_without_stats_falls_back(self, cfg, rng, tmp_path):
+        # 默认关闭 per_etalon_np → bank 内无统计键, 加载后走原始 NLL
+        eng = make_engine(cfg, rng)
+        eng.train([f"img_{i}.jpg" for i in range(15)])
+        s1 = eng.infer("probe.jpg")["score"]
+        bank = tmp_path / "bank.npz"
+        eng.save_bank(bank, product_name="t")
+
+        eng2 = make_engine(cfg, np.random.default_rng(42))
+        assert eng2.load_bank(bank)
+        assert eng2._etalon_np_mu is None
+        assert abs(eng2.infer("probe.jpg")["score"] - s1) < 1e-3
+
+    def test_unload_resets_etalon_stats(self, cfg, rng):
+        cfg["qc"]["dinov2"]["per_etalon_np"] = True
+        eng = make_engine(cfg, rng)
+        eng.train([f"img_{i}.jpg" for i in range(15)])
+        eng.unload()
+        assert eng._etalon_np_mu is None
+        assert eng._etalon_np_sigma is None

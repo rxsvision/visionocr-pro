@@ -59,7 +59,8 @@ class YOLODefectEngine(BaseEngine):
             category="vision",
             vram_gb=2.0,
             license="AGPL-3.0 (ultralytics)",
-            description="YOLOv8 少样本微调, 检测微观结构缺陷 (缺孔/短路/毛刺等)",
+            description="YOLO 少样本微调 (YOLO11 基线, 兼容 YOLOv8 权重), "
+                        "检测微观结构缺陷 (缺孔/短路/毛刺等)",
             tags=["检测", "缺陷", "YOLO", "结构缺陷", "PCB"],
         )
 
@@ -81,7 +82,9 @@ class YOLODefectEngine(BaseEngine):
 
     def _load_weights(self, weights: Path | None) -> None:
         if weights is None:
-            logger.error("未找到 YOLO 权重, 请先训练: python finetune/train_yolo.py")
+            logger.error("未找到 YOLO 权重, 请先训练: python finetune/train_yolo.py "
+                         "(默认 yolo11n 基线), 训练后将 best.pt 复制到 "
+                         "models/yolo/{产品名}.pt 启用产品门控")
             self.state = EngineState.ERROR
             return
         try:

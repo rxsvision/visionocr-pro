@@ -941,12 +941,260 @@ def mode_calibration(args) -> dict:
     return out
 
 
+def mode_dvab(args) -> dict:
+    """§5.1 DINOv2 PixOOD 借鉴 A/B: 基线 vs 死etalon重初始化 (P1)
+    vs per-etalon 局部NP归一化 (P4) vs 两者组合。
+
+    特征缓存: _extract_features 包一层缓存 — 变体差异仅在 GMM 拟合
+    与打分归一化, 原始 ViT 特征与变体无关, 避免 4 倍骨干推理。
+    判定口径: 同一 eps=0.10 NP 校准下, Recall 不降 (容忍 2pts 波动)
+    前提下比 FPR-hold 与 AUROC; 基线最优则如实记录不升级。
+    """
+    root = Path(args.root)
+    normals, defects = scan_kolektor(root)
+    rng = np.random.default_rng(2026)   # 与 mode_kolektor/fusion55 同划分
+    idx = rng.permutation(len(normals))
+    n_train = int(len(normals) * 0.8)
+    train = [normals[i] for i in idx[:n_train]]
+    holdout = [normals[i] for i in idx[n_train:]]
+    print(f"[dvab] 正常 {len(normals)} (train {len(train)} / "
+          f"holdout {len(holdout)}), 缺陷 {len(defects)}")
+
+    from engines.vision.dinov2_anomaly import DINOv2AnomalyEngine
+    eng = DINOv2AnomalyEngine(CFG)
+    eng.load()
+    assert eng.is_ready()
+
+    cache: dict = {}
+    orig_extract = eng._extract_features
+
+    def cached_extract(image):
+        key = image if isinstance(image, str) else None
+        if key is not None and key in cache:
+            return cache[key]
+        f = orig_extract(image)
+        if key is not None:
+            cache[key] = f
+        return f
+
+    eng._extract_features = cached_extract
+
+    variants = [
+        ("baseline", False, False),
+        ("reinit", True, False),
+        ("localnp", False, True),
+        ("reinit+localnp", True, True),
+    ]
+    rows = {}
+    for name, do_reinit, do_localnp in variants:
+        eng._reinit_dead = do_reinit
+        eng._per_etalon_np = do_localnp
+        eng._pca = eng._gmm = None
+        eng._etalon_np_mu = eng._etalon_np_sigma = None
+        eng._np_calibrator = None
+        eng._calibrated_threshold = None
+        print(f"── 变体: {name} ──")
+        t0 = time.time()
+        meta = eng.train(train)
+        if meta.get("error"):
+            rows[name] = {"error": meta["error"]}
+            continue
+        hold_s, e1 = score_paths(eng, holdout, f"{name}留出")
+        def_s, e2 = score_paths(eng, defects, f"{name}缺陷")
+        tau = float(eng._calibrated_threshold)
+        rows[name] = {
+            "train_sec": round(time.time() - t0, 1),
+            "n_cal": int(eng._np_calibrator.n_samples),
+            "tau": round(tau, 4),
+            "auroc": round(auroc(def_s, hold_s), 4),
+            "fpr_hold": round(float(np.mean(hold_s > tau)), 4),
+            "recall": round(float(np.mean(def_s > tau)), 4),
+            "errors": len(e1) + len(e2),
+        }
+        print(f"  [{name}] AUROC={rows[name]['auroc']} "
+              f"FPR-hold={rows[name]['fpr_hold']} "
+              f"Recall={rows[name]['recall']} "
+              f"({rows[name]['train_sec']}s)")
+
+    # ── 诚实推荐: Recall 不降 (容忍 2pts) 前提下比 FPR, 再比 AUROC ──
+    base = rows.get("baseline", {})
+    rec_base = base.get("recall", 0.0)
+    fpr_base = base.get("fpr_hold", 1.0)
+    auroc_base = base.get("auroc", 0.0)
+    candidates = []
+    for name, r in rows.items():
+        if name == "baseline" or r.get("error"):
+            continue
+        if r["recall"] < rec_base - 0.02:
+            continue  # Recall 降幅超容忍 → 不考虑
+        candidates.append(name)
+    if candidates:
+        best = min(candidates, key=lambda n: (rows[n]["fpr_hold"],
+                                              -rows[n]["auroc"]))
+        improve = (rows[best]["fpr_hold"] < fpr_base - 1e-9
+                   or rows[best]["auroc"] > auroc_base + 1e-9)
+    else:
+        best, improve = "baseline", False
+    recommendation = best if improve else "baseline"
+
+    out = {"dataset": "kolektor-dvab",
+           "n": {"train": len(train), "holdout": len(holdout),
+                 "defects": len(defects)},
+           "variants": rows,
+           "decision": {
+               "criterion": ("Recall 降幅≤2pts 前提下 FPR-hold/AUROC 更优 "
+                             "才升级; 否则保持基线"),
+               "recall_tolerance_pts": 2,
+               "best": best, "improves_over_baseline": improve,
+               "recommendation": recommendation,
+           }}
+    print(f"\n══ A/B 结论: 推荐 {recommendation} "
+          f"{'(升级)' if improve else '(基线已最优, 不升级)'} ══")
+    eng.unload()
+    return out
+
+
+def mode_prompts(args) -> dict:
+    """§5.3 GDDM 提示词挖掘 A/B 门控: 基线 DEFAULT_PROMPT vs 挖掘词集。
+
+    门控口径 (不达标即砍): 挖掘词集存在某 conf 工作点满足
+    Recall≥20% ∧ FPR-hold≤10% ∧ 平均框数≤3, 且优于基线最佳工作点,
+    才建议采纳; 否则 GDINO 对该数据集仍无可用工作点, §5.3 如实砍掉。
+    效率: 每 (图, 词集) 仅在 --confs 最低 conf 推理一次, 事后按各 conf
+    过滤计数 (框分数单调, 结果等价)。
+    """
+    from core.config import load_config
+    from core.defect_detector import DEFAULT_PROMPT, translate_prompt
+    from engines.registry import EngineRegistry
+
+    mined_path = Path(args.mined or "")
+    if not mined_path.is_file():
+        raise FileNotFoundError(
+            "缺少挖掘结果, 先运行: python scripts/mine_prompts.py "
+            "--root <数据集> --out mined_prompts.json")
+    mined = json.loads(mined_path.read_text(encoding="utf-8"))
+    mined_prompt = mined.get("prompt_candidate", "")
+    if not mined_prompt.strip():
+        raise ValueError("挖掘结果为空 (prompt_candidate 无词)")
+
+    root = Path(args.root)
+    normals, defects = scan_kolektor(root)
+    rng = np.random.default_rng(2026)   # 与 fusion55 同划分 (holdout 口径一致)
+    idx = rng.permutation(len(normals))
+    n_train = int(len(normals) * 0.8)
+    holdout = [normals[i] for i in idx[n_train:]]
+    print(f"[prompts] 正常 {len(normals)} (holdout {len(holdout)}), "
+          f"缺陷 {len(defects)}")
+
+    confs = sorted({round(float(c), 3) for c in args.confs.split(",")
+                    if c.strip()})
+    if not confs:
+        raise ValueError("--confs 解析为空")
+    conf_min = confs[0]
+
+    cfg = load_config()
+    reg = EngineRegistry(cfg)
+    reg.register_all()
+    engine = reg.get("grounding_dino")
+    if engine is None:
+        raise RuntimeError("grounding_dino 引擎未注册")
+    if not engine.is_ready():
+        reg.ensure_loaded("grounding_dino")
+    if not engine.is_ready():
+        raise RuntimeError("GDINO 模型加载失败")
+
+    sets = {"baseline": translate_prompt(DEFAULT_PROMPT),
+            "mined": mined_prompt}
+    print(f"  基线提示词: {sets['baseline']}")
+    print(f"  挖掘提示词: {sets['mined']}")
+    print(f"  conf 网格: {confs} (单次推理@{conf_min}, 事后过滤)")
+
+    results: dict = {}
+    for name, prompt in sets.items():
+        det_scores: dict[str, list[float]] = {}
+        errors = 0
+        pool = [(p, "holdout") for p in holdout] + \
+               [(p, "defect") for p in defects]
+        for i, (p, pool_tag) in enumerate(pool):
+            r = engine.infer(p, prompt=prompt, threshold=conf_min)
+            if r.get("error"):
+                errors += 1
+                det_scores[p] = []
+            else:
+                det_scores[p] = [float(s) for s in r["scores"]]
+            if (i + 1) % 25 == 0:
+                print(f"    [{name}] {i + 1}/{len(pool)}", flush=True)
+        per_conf = {}
+        for c in confs:
+            n_box_h = [sum(1 for s in det_scores[p] if s >= c)
+                       for p in holdout]
+            n_box_d = [sum(1 for s in det_scores[p] if s >= c)
+                       for p in defects]
+            per_conf[str(c)] = {
+                "recall": round(float(np.mean(np.asarray(n_box_d) > 0)), 4),
+                "fpr_hold": round(float(np.mean(np.asarray(n_box_h) > 0)), 4),
+                "avg_boxes_hold": round(float(np.mean(n_box_h)), 3),
+                "avg_boxes_defect": round(float(np.mean(n_box_d)), 3),
+                "max_boxes": int(max(n_box_h + n_box_d)),
+            }
+        results[name] = {"errors": errors, "by_conf": per_conf}
+        print(f"    [{name}] 完成, 错误 {errors}")
+
+    def best_working_point(by_conf: dict) -> tuple | None:
+        """门控工作点: Recall≥20% ∧ FPR≤10% ∧ 平均框≤3, 取 Recall 最高。"""
+        cand = [(c, m) for c, m in by_conf.items()
+                if m["recall"] >= 0.20 and m["fpr_hold"] <= 0.10
+                and m["avg_boxes_hold"] <= 3.0]
+        if not cand:
+            return None
+        return max(cand, key=lambda t: t[1]["recall"])
+
+    wp_base = best_working_point(results["baseline"]["by_conf"])
+    wp_mined = best_working_point(results["mined"]["by_conf"])
+    if wp_mined is not None and (
+            wp_base is None
+            or wp_mined[1]["recall"] >= wp_base[1]["recall"] + 0.05):
+        decision, reason = "adopt", \
+            f"挖掘词集存在可用工作点 conf={wp_mined[0]} 且优于基线"
+    elif wp_base is not None:
+        decision, reason = "retain_baseline", \
+            "基线已有可用工作点, 挖掘词集未带来显著提升"
+    else:
+        decision, reason = "cut", \
+            "两组词集均无可用工作点 — GDINO 对该数据集不适用, §5.3 砍掉"
+
+    out = {"dataset": "kolektor-prompts",
+           "n": {"holdout": len(holdout), "defects": len(defects)},
+           "confs": confs,
+           "prompts": sets,
+           "mined_source": str(mined_path),
+           "results": results,
+           "gate": {
+               "criterion": ("存在 conf 工作点: Recall≥20% ∧ FPR-hold≤10% "
+                             "∧ 平均框数≤3; 采纳需优于基线最佳工作点"),
+               "baseline_working_point": (
+                   {"conf": wp_base[0], **wp_base[1]} if wp_base else None),
+               "mined_working_point": (
+                   {"conf": wp_mined[0], **wp_mined[1]} if wp_mined else None),
+               "decision": decision,
+               "reason": reason,
+           }}
+    print(f"\n══ §5.3 门控判决: {decision} ══")
+    print(f"  {reason}")
+    for name in ("baseline", "mined"):
+        for c, m in results[name]["by_conf"].items():
+            print(f"  {name:<9} conf={c:<5} Recall={m['recall']:.1%} "
+                  f"FPR-hold={m['fpr_hold']:.1%} "
+                  f"平均框(正常)={m['avg_boxes_hold']}")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="多数据集验收评估")
     ap.add_argument("mode",
                     choices=["kolektor", "pcb", "yolo", "paired",
                              "bootstrap", "subspacead", "fusion55",
-                             "calibration"])
+                             "calibration", "dvab", "prompts"])
     ap.add_argument("root", nargs="?", default="")
     ap.add_argument("def_dir", nargs="?", default="")
     ap.add_argument("--name", default="")
@@ -954,6 +1202,10 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--no-gdino", dest="gdino", action="store_false",
                     help="fusion55: 跳过 GDINO (仅表面双源)")
+    ap.add_argument("--mined", default="",
+                    help="prompts: mine_prompts.py 输出的挖掘结果 JSON")
+    ap.add_argument("--confs", default="0.2,0.3,0.5",
+                    help="prompts: GDINO 置信度网格 (逗号分隔)")
     ap.set_defaults(gdino=True)
     args = ap.parse_args()
 
@@ -962,7 +1214,9 @@ def main():
                 "bootstrap": mode_bootstrap,
                 "subspacead": mode_subspacead,
                 "fusion55": mode_fusion55,
-                "calibration": mode_calibration}
+                "calibration": mode_calibration,
+                "dvab": mode_dvab,
+                "prompts": mode_prompts}
     # paired: root=ok_dir, def_dir=def_dir; bootstrap: root=dir
     if args.mode == "bootstrap":
         args.dir = args.root
