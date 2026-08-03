@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -370,6 +371,8 @@ def run_union_detection(registry, image_path: str,
       特征空间互补, 提升漏检覆盖; 需 OK 样本建库
     - Union OR: 任一模型判定 NG → 最终 NG (宁可误报, 不可漏检)
     - 误报由人工复核兜底 (产线标准流程)
+    - v1.3.0 P0-6: PatchCore 与 DINOv2 推理并行执行 (ThreadPoolExecutor),
+      结构源 (GDINO/YOLO) 保持串行, 热路径提速
 
     Args:
         registry: EngineRegistry 实例
@@ -408,7 +411,9 @@ def run_union_detection(registry, image_path: str,
     dv_result = None
     ng_sources = []
 
-    # ── 1) PatchCore 表面异常检测 ──
+    # ── 1) PatchCore 表面异常检测 (准备阶段; 推理与 DINOv2 并行, P0-6) ──
+    pc_engine = None
+    pc_kwargs = {}
     if enable_patchcore:
         engine = registry.get("anomalib")
         if engine is not None:
@@ -433,18 +438,66 @@ def run_union_detection(registry, image_path: str,
                             "无法自动选择, 请在工程师面板指定产品",
                             len(available), ", ".join(available))
             if engine.is_ready() and engine.has_bank:
-                kwargs = {}
+                pc_engine = engine
                 if threshold is not None:
-                    kwargs["threshold"] = threshold
-                pc_result = engine.infer(image_path, **kwargs)
-                if pc_result.get("error"):
-                    logger.warning("Union/PatchCore 错误: %s",
-                                   pc_result["error"])
-                    pc_result = None
-                elif pc_result.get("pred_label") == "NG":
-                    ng_sources.append("patchcore")
+                    pc_kwargs["threshold"] = threshold
             else:
                 logger.debug("Union: PatchCore 跳过 (未就绪或无记忆库)")
+
+    # ── 1c) DINOv2 表面异常检测 (准备阶段; 上提与 PatchCore 配对并行, P0-6) ──
+    dv_engine = None
+    dv_kwargs = {}
+    if enable_dinov2:
+        dv_eng = registry.get("dinov2_anomaly")
+        if dv_eng is not None:
+            if not dv_eng.is_ready():
+                registry.ensure_loaded("dinov2_anomaly")
+            if dv_eng.is_ready() and not dv_eng.has_bank:
+                from core.anomaly_bank import (load_product_bank_dinov2,
+                                               list_banks_dinov2)
+                if product_name:
+                    load_product_bank_dinov2(registry, product_name)
+                else:
+                    # 无产品上下文时, 尝试自动发现唯一 DINOv2 特征库
+                    available_dv = list_banks_dinov2()
+                    if len(available_dv) == 1:
+                        logger.info("Union: DINOv2 自动加载唯一特征库「%s」",
+                                    available_dv[0])
+                        load_product_bank_dinov2(registry, available_dv[0])
+                    elif len(available_dv) > 1:
+                        logger.warning(
+                            "Union: DINOv2 存在 %d 个特征库 [%s], "
+                            "无法自动选择, 请在工程师面板指定产品",
+                            len(available_dv), ", ".join(available_dv))
+            if dv_eng.is_ready() and dv_eng.has_bank:
+                dv_engine = dv_eng
+                if threshold is not None:
+                    dv_kwargs["threshold"] = threshold
+            else:
+                logger.debug("Union: DINOv2 跳过 (未就绪或无特征库)")
+
+    # ── 1x) 表面双源并行推理 (P0-6: PatchCore ∥ DINOv2, 热路径提速) ──
+    # 准备阶段 (ensure_loaded/特征库加载) 已在主线程串行完成,
+    # 推理本身无 registry 状态变更, 两引擎相互独立, 线程安全。
+    if pc_engine is not None and dv_engine is not None:
+        with ThreadPoolExecutor(max_workers=2,
+                                thread_name_prefix="union") as ex:
+            f_pc = ex.submit(pc_engine.infer, image_path, **pc_kwargs)
+            f_dv = ex.submit(dv_engine.infer, image_path, **dv_kwargs)
+            pc_result = f_pc.result()
+            dv_result = f_dv.result()
+    elif pc_engine is not None:
+        pc_result = pc_engine.infer(image_path, **pc_kwargs)
+    elif dv_engine is not None:
+        dv_result = dv_engine.infer(image_path, **dv_kwargs)
+
+    # PatchCore 后处理 (保持原 ng_sources 追加顺序)
+    if pc_result is not None:
+        if pc_result.get("error"):
+            logger.warning("Union/PatchCore 错误: %s", pc_result["error"])
+            pc_result = None
+        elif pc_result.get("pred_label") == "NG":
+            ng_sources.append("patchcore")
 
     # ── 2) Grounding DINO 结构缺陷检测 ──
     if enable_dino and prompt.strip():
@@ -477,42 +530,13 @@ def run_union_detection(registry, image_path: str,
             logger.debug("Union: YOLO 跳过 (产品「%s」无专属权重)",
                          product_name or "<无>")
 
-    # ── 2c) DINOv2 表面异常检测 (与 PatchCore 特征互补) ──
-    if enable_dinov2:
-        dv_eng = registry.get("dinov2_anomaly")
-        if dv_eng is not None:
-            if not dv_eng.is_ready():
-                registry.ensure_loaded("dinov2_anomaly")
-            if dv_eng.is_ready() and not dv_eng.has_bank:
-                from core.anomaly_bank import (load_product_bank_dinov2,
-                                               list_banks_dinov2)
-                if product_name:
-                    load_product_bank_dinov2(registry, product_name)
-                else:
-                    # 无产品上下文时, 尝试自动发现唯一 DINOv2 特征库
-                    available_dv = list_banks_dinov2()
-                    if len(available_dv) == 1:
-                        logger.info("Union: DINOv2 自动加载唯一特征库「%s」",
-                                    available_dv[0])
-                        load_product_bank_dinov2(registry, available_dv[0])
-                    elif len(available_dv) > 1:
-                        logger.warning(
-                            "Union: DINOv2 存在 %d 个特征库 [%s], "
-                            "无法自动选择, 请在工程师面板指定产品",
-                            len(available_dv), ", ".join(available_dv))
-            if dv_eng.is_ready() and dv_eng.has_bank:
-                dv_kwargs = {}
-                if threshold is not None:
-                    dv_kwargs["threshold"] = threshold
-                dv_result = dv_eng.infer(image_path, **dv_kwargs)
-                if dv_result.get("error"):
-                    logger.warning("Union/DINOv2 错误: %s",
-                                   dv_result["error"])
-                    dv_result = None
-                elif dv_result.get("pred_label") == "NG":
-                    ng_sources.append("dinov2")
-            else:
-                logger.debug("Union: DINOv2 跳过 (未就绪或无特征库)")
+    # ── 2c) DINOv2 后处理 (推理已在 1x 并行完成, 保持原 ng_sources 顺序) ──
+    if dv_result is not None:
+        if dv_result.get("error"):
+            logger.warning("Union/DINOv2 错误: %s", dv_result["error"])
+            dv_result = None
+        elif dv_result.get("pred_label") == "NG":
+            ng_sources.append("dinov2")
 
     # ── 3) Union OR 判定 ──
     # 安全守卫: 如果所有引擎都被跳过, 警告用户 OK 不可信
