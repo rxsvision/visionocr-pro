@@ -42,6 +42,9 @@ Desktop.ini
 *.key
 credentials.json
 scripts/local_data_paths.yaml
+credentials*
+*secret*
+*.local.*
 finetune/configs/rec_industrial_finetune.yaml
 
 # 运行时生成的结果文件 (热力�?审计)

@@ -252,7 +252,6 @@ visionocr-pro/
 ├── dashboard/              # Datasette 插件 (质检看板图片路由)
 ├── scripts/                # 辅助脚本 (doctor自检/评估/诊断/看板)
 ├── docs/                   # 指南 (新产品接入/OK库登记)
-├── scenarios/              # 场景配置
 ├── tests/                  # pytest 单元测试 (317 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
