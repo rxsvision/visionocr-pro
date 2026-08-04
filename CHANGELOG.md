@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-08-04
+
+### Added
+
+- `core/config_schema.py`: pydantic 配置 schema 校验 (类型/取值范围/枚举), 启动期聚合报错快速暴露配置错误
+- `tests/test_config_schema.py`: 配置 schema 契约 13 项用例 (含仓库 config.yaml 防脱节断言)
+- CI 隐私 lint: 个人邮箱/公司客户名硬编码进产品代码即失败
+- requirements / requirements-test 补 `pydantic>=2.5`
+
+### Changed
+
+- `.gitignore` 编码规整为 UTF-8 (修复 cp936 混码与截断字节)
+- 测试 317 → 330
+
 ## [1.5.2] - 2026-08-04
 
 ### Removed

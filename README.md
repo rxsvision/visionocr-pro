@@ -204,6 +204,7 @@ visionocr-pro/
 ├── DEPLOY.md               # 部署指南 (中英双语)
 ├── core/                   # 核心业务逻辑
 │   ├── config.py           #   配置加载 + 环境变量替换
+│   ├── config_schema.py    #   配置 schema 校验 (pydantic, 启动期报错)
 │   ├── database.py         #   SQLite 数据层 + 审计日志 + 自动备份
 │   ├── warmup.py           #   引擎预热 (后台异步, 消除冷启动)
 │   ├── infer_stats.py      #   推理耗时统计 (滑动窗口, 线程安全)
@@ -252,7 +253,7 @@ visionocr-pro/
 ├── dashboard/              # Datasette 插件 (质检看板图片路由)
 ├── scripts/                # 辅助脚本 (doctor自检/评估/诊断/看板)
 ├── docs/                   # 指南 (新产品接入/OK库登记)
-├── tests/                  # pytest 单元测试 (317 tests)
+├── tests/                  # pytest 单元测试 (330 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 
