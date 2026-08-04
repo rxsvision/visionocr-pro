@@ -80,6 +80,15 @@ def load_config(path: Path | str | None = None, profile: str | None = None) -> d
     if isinstance(export_cfg, dict) and export_cfg.get("dir"):
         ep = Path(export_cfg["dir"])
         export_cfg["dir"] = str(ep if ep.is_absolute() else root / ep)
+
+    # Schema 校验 (类型/取值范围/枚举; 失败抛 ConfigValidationError 启动期快速暴露)
+    try:
+        from core.config_schema import validate_config
+        cfg = validate_config(cfg)
+    except ImportError:
+        import logging
+        logging.getLogger("visionocr.config").warning(
+            "pydantic 未安装, 跳过配置 schema 校验")
     return cfg
 
 

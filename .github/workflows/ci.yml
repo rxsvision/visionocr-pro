@@ -83,3 +83,23 @@ jobs:
             exit 1
           fi
           echo "No hardcoded local data paths in Python files"
+
+      - name: Check personal identifiers in code
+        run: |
+          # 个人邮箱不得出现在产品代码 (测试夹具除外)
+          EMAILS=$(grep -rn --include="*.py" -E '@(gmail|qq|163|126|outlook|hotmail|foxmail)\.com' . \
+            | grep -v '.venv/' | grep -v '/tests/' || true)
+          if [ -n "$EMAILS" ]; then
+            echo "ERROR: Personal email addresses found:"
+            echo "$EMAILS"
+            exit 1
+          fi
+          # 公司/客户名不得硬编码进 .py (配置唯一来源是 config.yaml 的 company 段)
+          CLIENTS=$(grep -rn --include="*.py" -E '有限公司|股份有限公司|集团' . \
+            | grep -v '.venv/' | grep -v '/tests/' || true)
+          if [ -n "$CLIENTS" ]; then
+            echo "ERROR: Hardcoded company/client names in .py:"
+            echo "$CLIENTS"
+            exit 1
+          fi
+          echo "No personal identifiers in product code"
