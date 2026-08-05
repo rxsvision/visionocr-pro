@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-08-04
+
+### Changed
+
+- 预热策略重排: 核心检测引擎 (PatchCore/DINOv2/Grounding DINO) 按 qc.union enabled 开关同步预热, 启动完成即检测就绪
+- OCR/场景分类/条码降为后台异步预热 (定位对齐: OCR 是辅助插件, 检测是核心)
+- 启动日志精确报出未就绪的核心检测引擎清单
+- 测试 330 → 344
+
+### Fixed
+
+- PatchCore 无记忆库时 dummy 推理报错不再误判为预热失败
+
 ## [1.5.3] - 2026-08-04
 
 ### Added
