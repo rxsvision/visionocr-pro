@@ -207,15 +207,19 @@ def main():
     except Exception as e:
         logger.warning("调度器启动失败 (非致命): %s", e)
 
-    # 引擎预热: 加载默认 OCR 引擎 + dummy 推理, 消除首次操作延迟
+    # 引擎预热: 核心检测引擎同步预热 (启动可慢, 检测要快),
+    # OCR/场景分类/条码后台异步预热
     try:
         from core.warmup import warmup_engines
         warmup_report = warmup_engines(registry, cfg)
-        if warmup_report["ocr"].get("ok"):
-            logger.info("系统就绪 (预热 %.1fs), 可开始操作",
+        if warmup_report["ok"]:
+            logger.info("系统就绪 (核心检测预热 %.1fs), 可开始操作",
                         warmup_report["total_sec"])
         else:
-            logger.warning("预热未完成, 首次操作可能较慢")
+            failed = [n for n, r in warmup_report["core"].items()
+                      if not r.get("ok")]
+            logger.warning("部分核心检测引擎未就绪 %s, 首检可能较慢",
+                           failed)
     except Exception as e:
         logger.warning("预热跳过 (非致命): %s", e)
 

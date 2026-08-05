@@ -1,8 +1,8 @@
-"""引擎预热 - 启动时加载默认引擎并执行 dummy 推理, 消除首次操作延迟
+"""引擎预热 - 核心检测链路优先 (定位对齐: 启动可慢, 检测要快)
 
 设计原则:
-- 必要引擎 (OCR 主引擎) 在 app.launch() 之前同步加载, 浏览器打开时即可用
-- 次要引擎 (场景分类/条码/质检) 后台异步加载, 不阻塞启动
+- [同步] 核心检测引擎按 qc.union 的 enabled 开关预热, 启动完成即检测就绪
+- [异步] OCR (辅助插件) + 场景分类/条码后台预热, 不阻塞启动
 - 预热失败不阻断启动, 降级为按需加载模式
 - 产线开机后第一张图不让工人等
 """
@@ -40,39 +40,37 @@ def _get_dummy_path() -> str:
 
 
 def warmup_engines(registry, config: dict) -> dict:
-    """同步预热必要引擎 + 启动后台异步预热次要引擎。
+    """同步预热核心检测引擎 + 启动后台异步预热辅助引擎。
 
-    策略:
-    - [同步] 预热 OCR default_engine (工人最高频, 必须启动即可用)
-    - [同步] 若主引擎失败, 降级预热 fallback_engine
-    - [异步] 后台预加载: scene_classifier, barcode, anomalib (不阻塞启动)
+    策略 (定位对齐: 检测是核心, OCR 是辅助插件):
+    - [同步] qc.union 各 enabled 源 (anomalib/dinov2/grounding_dino),
+      启动完成即检测就绪; YOLO 受产品门控, 按需加载不入预热
+    - [异步] 后台: OCR default_engine (失败降级 fallback_engine) +
+      scene_classifier + barcode
 
     Returns:
-        {"ocr": {...}, "background": [...], "total_sec": float}
+        {"ok": bool, "core": {name: {...}}, "background": [...],
+         "total_sec": float}
+        ok 为 False 时表示至少一个核心检测源未就绪 (首检可能较慢/受限)。
     """
-    report = {"ocr": {}, "background": [], "total_sec": 0}
+    report = {"ok": True, "core": {}, "background": [], "total_sec": 0}
     t_start = time.time()
 
-    # ─── 同步: 必要 OCR 引擎 ─────────────────────────────────
+    # 同步: 核心检测引擎 (按 qc.union enabled 开关)
+    for name in _get_core_engines(config):
+        _warmup_core_one(registry, name, report)
+
+    # 异步: 辅助引擎后台预热 (OCR 插件 + 场景分类 + 条码)
     ocr_cfg = config.get("ocr", {}) or {}
-    default_engine = ocr_cfg.get("default_engine", "rapidocr")
-    fallback_engine = ocr_cfg.get("fallback_engine", "rapidocr")
-
-    if default_engine == "auto":
-        default_engine = "rapidocr"
-
-    ok = _warmup_one(registry, default_engine, report)
-
-    if not ok and fallback_engine != default_engine:
-        logger.info("主引擎 %s 预热失败, 降级预热 %s",
-                    default_engine, fallback_engine)
-        _warmup_one(registry, fallback_engine, report)
-
-    # ─── 异步: 次要引擎后台预加载 ─────────────────────────────
-    secondary_engines = _get_secondary_engines(config, default_engine)
-    if secondary_engines:
-        report["background"] = secondary_engines
-        _start_background_warmup(registry, secondary_engines)
+    primary = ocr_cfg.get("default_engine", "rapidocr")
+    if primary == "auto":
+        primary = "rapidocr"
+    background = _get_background_engines(config, primary)
+    if background:
+        report["background"] = background
+        _start_background_warmup(
+            registry, background,
+            fallback=ocr_cfg.get("fallback_engine", primary))
 
     report["total_sec"] = round(time.time() - t_start, 2)
     return report
@@ -83,30 +81,36 @@ def get_background_status() -> dict[str, str]:
     return dict(_background_status)
 
 
-def _get_secondary_engines(config: dict, primary: str) -> list[str]:
-    """根据配置确定需要后台预加载的次要引擎列表。"""
-    secondary = []
+def _get_core_engines(config: dict) -> list[str]:
+    """按 qc.union 的 enabled 开关确定同步预热的核心检测源。
 
-    # 场景分类器 (OCR 自动路由依赖)
+    YOLO (产品门控, 无专属权重不激活) 与 SubspaceAD (降级通道)
+    不入预热: 前者按需 load_for_product, 后者按需加载不占常驻预算。
+    """
+    union_cfg = (config.get("qc", {}) or {}).get("union", {})
+    core = []
+    if union_cfg.get("enable_patchcore", True):
+        core.append("anomalib")
+    if union_cfg.get("enable_dinov2", True):
+        core.append("dinov2_anomaly")
+    if union_cfg.get("enable_dino", True):
+        core.append("grounding_dino")
+    return core
+
+
+def _get_background_engines(config: dict, primary_ocr: str) -> list[str]:
+    """后台预热列表: OCR 主引擎优先, 其后场景分类器与条码。"""
+    engines = [primary_ocr]
     sc_cfg = (config.get("ocr", {}) or {}).get("scene_classifier", {})
     if sc_cfg.get("enabled", True):
-        secondary.append("scene_classifier")
-
-    # 条码 (轻量, 加载快)
-    secondary.append("barcode")
-
-    # PatchCore (如果 QC 功能启用)
-    qc_cfg = config.get("qc", {}) or {}
-    if qc_cfg.get("patchcore", {}).get("input_size"):
-        secondary.append("anomalib")
-
-    # 排除已同步加载的主引擎
-    secondary = [e for e in secondary if e != primary]
-    return secondary
+        engines.append("scene_classifier")
+    engines.append("barcode")
+    return list(dict.fromkeys(engines))  # 去重保序
 
 
-def _start_background_warmup(registry, engines: list[str]) -> None:
-    """在后台线程中逐个预加载次要引擎。"""
+def _start_background_warmup(registry, engines: list[str],
+                             fallback: str = "") -> None:
+    """在后台线程中逐个预加载辅助引擎; OCR 主引擎失败时降级 fallback。"""
     def _bg_load():
         for name in engines:
             _background_status[name] = "loading"
@@ -119,55 +123,62 @@ def _start_background_warmup(registry, engines: list[str]) -> None:
                     logger.info("后台预热完成: %s (%.1fs)", name, elapsed)
                 else:
                     _background_status[name] = "failed"
-                    logger.debug("后台预热跳过: %s (状态: %s)", name, engine.state.value)
+                    logger.debug("后台预热跳过: %s (状态: %s)",
+                                 name, engine.state.value)
             except Exception as e:
                 _background_status[name] = "failed"
                 logger.debug("后台预热失败: %s (%s)", name, e)
+            # OCR 主引擎失败 → 追加降级引擎 (同原同步降级语义, 移入后台)
+            if (_background_status.get(name) == "failed"
+                    and fallback and fallback != name
+                    and registry.get(fallback) is not None
+                    and not registry.get(fallback).is_ready()
+                    and fallback not in engines):
+                logger.info("OCR 主引擎 %s 预热失败, 后台降级预热 %s",
+                            name, fallback)
+                engines.append(fallback)
 
     thread = threading.Thread(target=_bg_load, daemon=True, name="warmup-bg")
     thread.start()
     logger.info("后台预热已启动: %s", ", ".join(engines))
 
 
-def _warmup_one(registry, engine_name: str, report: dict) -> bool:
-    """预热单个引擎, 成功返回 True"""
-    logger.info("预热引擎: %s ...", engine_name)
+def _warmup_core_one(registry, engine_name: str, report: dict) -> bool:
+    """同步预热单个核心检测引擎, 成功返回 True。
+
+    与 OCR 预热不同: 检测引擎只做加载 + dummy 推理预热 CUDA,
+    dummy 推理的业务报错 (如 PatchCore 无记忆库) 不影响"加载就绪"判定。
+    """
+    logger.info("预热核心检测引擎: %s ...", engine_name)
+    entry = report["core"].setdefault(engine_name, {})
     try:
         t0 = time.time()
         engine = registry.ensure_loaded(engine_name)
-        load_sec = time.time() - t0
+        entry["load_sec"] = round(time.time() - t0, 2)
 
         if not engine.is_ready():
-            logger.warning("引擎 %s 加载失败, 跳过预热", engine_name)
-            report["ocr"] = {"engine": engine_name, "ok": False,
-                             "error": "load failed"}
+            entry["ok"] = False
+            entry["error"] = "load failed"
+            report["ok"] = False
+            logger.warning("核心引擎 %s 加载失败, 首检将受限", engine_name)
             return False
 
-        # dummy 推理: 触发 CUDA kernel JIT 编译 + 内存分配
+        # dummy 推理: 触发 CUDA kernel JIT 编译 (业务报错不影响预热判定)
         t0 = time.time()
-        dummy_path = _get_dummy_path()
-        result = engine.infer(dummy_path)
-        infer_sec = time.time() - t0
-
-        # 检查推理是否真正成功 (Docker 引擎可能 load 成功但 infer 报错)
-        if isinstance(result, dict) and result.get("error"):
-            logger.warning("引擎 %s 推理失败: %s", engine_name,
-                           result["error"])
-            report["ocr"] = {"engine": engine_name, "ok": False,
-                             "error": result["error"]}
-            return False
-
-        report["ocr"] = {
-            "engine": engine_name,
-            "load_sec": round(load_sec, 2),
-            "infer_sec": round(infer_sec, 2),
-            "ok": True,
-        }
-        logger.info("预热完成: %s (加载 %.1fs + 推理 %.2fs)",
-                    engine_name, load_sec, infer_sec)
+        try:
+            engine.infer(_get_dummy_path())
+        except Exception as e:
+            logger.debug("核心引擎 %s dummy 推理跳过 (预期内): %s",
+                         engine_name, e)
+        entry["infer_sec"] = round(time.time() - t0, 2)
+        entry["ok"] = True
+        logger.info("核心预热完成: %s (加载 %.1fs + 预热推理 %.2fs)",
+                    engine_name, entry["load_sec"], entry["infer_sec"])
         return True
 
     except Exception as e:
-        logger.warning("预热异常 (非致命): %s: %s", engine_name, e)
-        report["ocr"] = {"engine": engine_name, "ok": False, "error": str(e)}
+        entry["ok"] = False
+        entry["error"] = str(e)
+        report["ok"] = False
+        logger.warning("核心预热异常 (非致命): %s: %s", engine_name, e)
         return False
