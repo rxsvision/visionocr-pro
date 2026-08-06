@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.5] - 2026-08-07
+
+### Added
+
+- core/detections.py 统一检测结果模型 (Detection/DetectionSet + from_gdino/from_yolo 转换器, 借鉴 supervision 设计模式, 零新增依赖)
+- finetune/evaluate_yolo.py YOLO 验收评估脚本 (mAP@50/@50-95/逐类 P/R + 混淆矩阵, 独立离线进程)
+- tests/test_detections.py 15 用例 (含与旧 dict 格式字节级等价测试)
+- 测试 344 → 359
+
+### Changed
+
+- run_detection 内部组装改走 DetectionSet (对外 dict 格式不变, Union 融合链路零改动)
+- README 结构树同步 detections.py/finetune 验收评估描述与测试数 359
+
 ## [1.5.4] - 2026-08-04
 
 ### Changed

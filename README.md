@@ -218,6 +218,7 @@ visionocr-pro/
 │   ├── postprocess.py      #   OCR 后处理纠错
 │   ├── depth_fusion.py     #   3D 深度融合
 │   ├── defect_detector.py  #   缺陷检测流程编排 (DINO/PatchCore/DINOv2/Union)
+│   ├── detections.py       #   统一检测结果模型 (Detection/DetectionSet)
 │   ├── recipes.py          #   检测配方 (提示词/阈值, 按产品隔离)
 │   ├── qc_drawing.py       #   质检标注绘制 (检测框/热力图/判定徽章)
 │   ├── qc_persist.py       #   质检结果与图片落库
@@ -249,11 +250,11 @@ visionocr-pro/
 │   ├── tab_qc.py           #   工业质检 Tab
 │   ├── tab_behavior.py     #   行为分析 Tab (P2)
 │   └── tab_settings.py     #   设置 + 引擎健康面板
-├── finetune/               # 微调工具链 (PP-OCRv6 + YOLO 缺陷检测)
+├── finetune/               # 微调工具链 (PP-OCRv6 + YOLO 缺陷检测 + 验收评估)
 ├── dashboard/              # Datasette 插件 (质检看板图片路由)
 ├── scripts/                # 辅助脚本 (doctor自检/评估/诊断/看板)
 ├── docs/                   # 指南 (新产品接入/OK库登记)
-├── tests/                  # pytest 单元测试 (344 tests)
+├── tests/                  # pytest 单元测试 (359 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 
