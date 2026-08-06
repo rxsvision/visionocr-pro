@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
+from core.detections import DetectionSet
 from core.fusion import (calibrated_n_samples, get_drift_monitor,
                          staged_fusion)
 from core.imutils import imread_unicode
@@ -105,10 +106,10 @@ def run_detection(registry, image_path: str, prompt: str = "",
     verdict = "NG" if len(boxes) > 0 else "OK"
     max_score = max(scores) if scores else 0.0
 
-    detections = [
-        {"box": b, "label": l, "score": s, "area_px": round(_bbox_area(b), 1)}
-        for b, l, s in zip(boxes, labels, scores)
-    ]
+    # 统一检测结果模型 (借鉴 supervision 模式, 对外 dict 格式不变)
+    detections = DetectionSet.from_gdino(
+        {"boxes": boxes, "labels": labels, "scores": scores}
+    ).to_legacy_dicts()
 
     return {
         "image": annotated,
