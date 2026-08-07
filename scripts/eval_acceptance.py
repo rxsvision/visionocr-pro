@@ -191,6 +191,9 @@ def eval_block(name: str, pc, dv, ok_paths: list[str],
                   "both": both, "only_pc": only_pc,
                   "only_dv": only_dv, "missed": missed},
         "errors": len(e1) + len(e2) + len(e3) + len(e4),
+        # 团标 §6.1 口径标注 (docs/spec_alignment.md): infer_ms 为
+        # 单引擎推理口径, 不含 Union 编排/融合开销
+        "speed_scope": "infer_ms=单引擎推理均值(含预处理,不含编排与融合)",
     }
 
     # ── 多 eps 运行点 (零漏检政策选型依据; 用引擎 cal 分数重算分位数) ──
@@ -414,6 +417,7 @@ def mode_yolo(args) -> dict:
               "n_def": len(defects), "n_ok": len(normals),
               "recall": recall, "fpr": fpr,
               "infer_ms": round(dt * 1000, 1),
+              "speed_scope": "infer_ms=YOLO单引擎推理均值(不含编排与融合)",
               "per_class": per_cls_stats,
               "note": "val 划分为训练时留出, 指标为诚实口径"}
     print(f"  YOLO: Recall={recall:.2%}, FPR={fpr:.2%}, "
