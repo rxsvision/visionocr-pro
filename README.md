@@ -253,8 +253,8 @@ visionocr-pro/
 ├── finetune/               # 微调工具链 (PP-OCRv6 + YOLO 缺陷检测 + 验收评估)
 ├── dashboard/              # Datasette 插件 (质检看板图片路由)
 ├── scripts/                # 辅助脚本 (doctor自检/评估/诊断/看板)
-├── docs/                   # 指南 (新产品接入/OK库登记)
-├── tests/                  # pytest 单元测试 (359 tests)
+├── docs/                   # 指南 (新产品接入/OK库登记/团标对齐)
+├── tests/                  # pytest 单元测试 (367 tests)
 └── models/                 # 模型权重 (gitignore, 本地存放)
 ```
 

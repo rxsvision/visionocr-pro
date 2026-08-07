@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.7] - 2026-08-08
+
+### Added
+
+- docs/spec_alignment.md 团标对齐台账 (§4/§5/§6 逐条对表 + §6.1-6.4 处置规程 + 文献映射)
+- finetune/evaluate_yolo.py §6.2 门控模式 (--gate + --spec-tier, mAP50 主门控, 门槛数值参数化, FAIL exit 1)
+- tests/test_evaluate_yolo_gate.py 门控单元测试 8 例 (边界/档位切换/次级参考/异常安全)
+- scripts/eval_acceptance.py speed_scope 速度口径声明字段
+
 ## [1.5.6] - 2026-08-07
 
 ### Changed
