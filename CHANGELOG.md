@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.6] - 2026-08-07
+
+### Changed
+
+- .github/workflows/release.yml Release Gate 补齐交付与回滚路径: tag 构建归档源码交付产物 (actions/upload-artifact), 复用 CI 四项卫生 lint 门禁
+- 新增 rollback-guide job: 发布时自动解析上一个已发布 tag 与修订号, 打印可执行回退路径
+
 ## [1.5.5] - 2026-08-07
 
 ### Added

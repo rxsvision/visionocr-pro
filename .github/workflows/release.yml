@@ -40,3 +40,106 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
+
+      - name: Archive source delivery artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        run: |
+          ARCHIVE="${RUNNER_TEMP}/visionocr-pro-${GITHUB_REF_NAME}-source.tar.gz"
+          tar --exclude='.git' --exclude='.venv*' --exclude='models' --exclude='data' \
+              --exclude='logs' --exclude='results' --exclude='__pycache__' \
+              --exclude='*.pt' --exclude='*.npz' \
+              -czf "$ARCHIVE" .
+          echo "Archived source delivery artifact: $(basename "$ARCHIVE") ($(du -h "$ARCHIVE" | cut -f1))"
+
+      - name: Upload source delivery artifact
+        if: matrix.os == 'ubuntu-latest' && matrix.python == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visionocr-pro-${{ github.ref_name }}-source
+          path: ${{ runner.temp }}/visionocr-pro-${{ github.ref_name }}-source.tar.gz
+          if-no-files-found: error
+
+  lint:
+    name: Encoding & structure check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for non-UTF8 files
+        run: |
+          find . -name "*.py" -not -path "./.venv/*" | while read f; do
+            if ! iconv -f UTF-8 -t UTF-8 "$f" > /dev/null 2>&1; then
+              echo "NON-UTF8: $f"
+              exit 1
+            fi
+          done
+          echo "All .py files are valid UTF-8"
+
+      - name: Check no secrets in config
+        run: |
+          if grep -rn "api_key.*=.*['\"][a-zA-Z0-9]" config.yaml .env.example 2>/dev/null | grep -v ':-'; then
+            echo "WARNING: Possible hardcoded secret found"
+            exit 1
+          fi
+          echo "No hardcoded secrets detected"
+
+      - name: Check no hardcoded local data paths
+        run: |
+          # Block user-specific drive paths (E:\, D:\rxs, D:\00_, etc.)
+          # Allow: C:\Program Files (standard SDK), D:\images (generic Docker example)
+          VIOLATIONS=$(grep -rn --include="*.py" -E '[A-Z]:\\\\' . \
+            | grep -v '.venv/' \
+            | grep -v 'C:\\\\Program Files' \
+            | grep -v 'local_data_paths' \
+            | grep -v '#' \
+            || true)
+          if [ -n "$VIOLATIONS" ]; then
+            echo "ERROR: Hardcoded local paths found in .py files:"
+            echo "$VIOLATIONS"
+            exit 1
+          fi
+          echo "No hardcoded local data paths in Python files"
+
+      - name: Check personal identifiers in code
+        run: |
+          # 个人邮箱不得出现在产品代码 (测试夹具除外)
+          EMAILS=$(grep -rn --include="*.py" -E '@(gmail|qq|163|126|outlook|hotmail|foxmail)\.com' . \
+            | grep -v '.venv/' | grep -v '/tests/' || true)
+          if [ -n "$EMAILS" ]; then
+            echo "ERROR: Personal email addresses found:"
+            echo "$EMAILS"
+            exit 1
+          fi
+          # 公司/客户名不得硬编码进 .py (配置唯一来源是 config.yaml 的 company 段)
+          CLIENTS=$(grep -rn --include="*.py" -E '有限公司|股份有限公司|集团' . \
+            | grep -v '.venv/' | grep -v '/tests/' || true)
+          if [ -n "$CLIENTS" ]; then
+            echo "ERROR: Hardcoded company/client names in .py:"
+            echo "$CLIENTS"
+            exit 1
+          fi
+          echo "No personal identifiers in product code"
+
+  rollback-guide:
+    name: Rollback path (previous tag)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Print rollback path to previous released revision
+        run: |
+          CURRENT="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${CURRENT}$" | head -n 1)
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found; nothing to roll back to."
+            exit 1
+          fi
+          PREV_SHA=$(git rev-list -n 1 "$PREV_TAG")
+          echo "Release ${CURRENT} rollback path:"
+          echo "  1) git fetch --tags"
+          echo "  2) git checkout ${PREV_TAG}   # revision ${PREV_SHA}"
+          echo "  3) redeploy per DEPLOY.md; restore data via backup_db if needed"
+          echo "Rollback target verified: ${PREV_TAG} -> ${PREV_SHA}"
