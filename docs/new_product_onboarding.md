@@ -154,3 +154,4 @@ Union 第三检测源：
 - UI 入口：`ui/tab_qc.py`（产品登记 / 校准协议）
 - 验收脚本示例：`scripts/eval_np_calibration.py`、`scripts/eval_acceptance.py`
   （`fusion55` / `calibration` 模式）
+- 发布验收清单（执行点/判决规则/回退动作）：`docs/release_checklist.md`

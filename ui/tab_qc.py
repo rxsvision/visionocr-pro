@@ -11,14 +11,16 @@ import tempfile
 from pathlib import Path
 
 from ui.safe_yield import safe_generator
+from ui.qc_flow import (
+    assemble_dino_view, assemble_union_view, format_fusion_display,
+    persist_qc_result, resolve_fusion_mode, resolve_product_name,
+)
 
 import gradio as gr
 
 from core.config import load_config
-from core.database import get_conn
 from core.defect_detector import (
-    DEFAULT_PROMPT, run_detection, run_union_detection, save_qc_result,
-    persist_qc_image,
+    DEFAULT_PROMPT, run_detection, run_union_detection,
     list_recipes, load_recipe, save_recipe, delete_recipe,
 )
 from core.anomaly_bank import (
@@ -337,7 +339,7 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
     # ─── PatchCore 少样本模式 ─────────────────────────────
     if "PatchCore" in (mode or ""):
         yield _EMPTY[:6] + (log("▶ PatchCore 少样本检测..."),)
-        product = "" if pc_product == "(新建)" else (pc_product or "")
+        product = resolve_product_name(pc_product)
         result = run_anomaly_detection(registry, image_path,
                                        product_name=product,
                                        threshold=threshold)
@@ -364,7 +366,7 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
     # ─── SubspaceAD 快速换线辅助模式 (不给自主判定, 人工复核) ──
     if "SubspaceAD" in (mode or ""):
         yield _EMPTY[:6] + (log("▶ SubspaceAD 辅助提示 (快速换线, 仅供参考)..."),)
-        product = "" if sa_product in ("(新建)", None) else (sa_product or "")
+        product = resolve_product_name(sa_product)
         result = run_subspace_detection(registry, image_path,
                                         product_name=product)
         if result.get("error"):
@@ -393,7 +395,7 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         yield _EMPTY[:6] + (log("▶ Union 零漏检 (PatchCore+DINO+YOLO+DINOv2 "
                                 "分阶段融合: 双源互证→NG, 单源孤证→REVIEW 黄牌)..."),)
         cfg = _get_config()
-        product = "" if pc_product in ("(新建)", None) else (pc_product or "")
+        product = resolve_product_name(pc_product)
         result = run_union_detection(
             registry, image_path, prompt=prompt, threshold=threshold,
             config=cfg, product_name=product)
@@ -406,87 +408,17 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
         # 缓存供 "AI 缺陷解释" 复用 (不重复检测)
         _last_union = {"image_path": image_path, "result": result}
 
-        verdict = result["verdict"]
-        sources = result.get("ng_sources", [])
-        pc = result.get("patchcore")
-        dino = result.get("dino")
-        yolo = result.get("yolo")
-        dv = result.get("dinov2")
+        # 结果装配 (明细表/判定文案/落库 detections) 见 ui.qc_flow
+        view = assemble_union_view(result, product)
 
-        # 统一明细表 (对齐表头 #/缺陷类型/置信度/位置) + detections (落库用)
-        # 注: max_score 仅统计 dino/yolo (0~1概率语义); patchcore 距离分与
-        #     dinov2 NLL 分为无界量纲, 混入会破坏百分比显示
-        table = []
-        detections = []
-        max_score = 0.0
-        row_no = 0
-        if pc:
-            row_no += 1
-            table.append([str(row_no), "[PatchCore] 表面异常",
-                          f"{pc.get('score', 0):.4f}", "热力图"])
-            detections.append({"source": "patchcore", "label": "表面异常",
-                               "score": pc.get("score", 0)})
-        if dv:
-            row_no += 1
-            table.append([str(row_no), "[DINOv2] 表面异常",
-                          f"{dv.get('score', 0):.4f}", "热力图"])
-            detections.append({"source": "dinov2", "label": "表面异常",
-                               "score": dv.get("score", 0)})
-        if dino:
-            for det in dino.get("detections", []):
-                box = det["box"]
-                row_no += 1
-                table.append([str(row_no), f"[DINO] {det['label']}",
-                              f"{det['score']:.2%}",
-                              f"({box[0]:.0f},{box[1]:.0f},{box[2]:.0f},{box[3]:.0f})"])
-                detections.append({"source": "dino", **det})
-            max_score = max(max_score, float(dino.get("max_score", 0)))
-        if yolo:
-            for b, l, s in zip(yolo.get("boxes", []),
-                               yolo.get("labels", []),
-                               yolo.get("scores", [])):
-                row_no += 1
-                table.append([str(row_no), f"[YOLO] {l}", f"{s:.2%}",
-                              f"({b[0]:.0f},{b[1]:.0f},{b[2]:.0f},{b[3]:.0f})"])
-                detections.append({"source": "yolo", "box": b,
-                                   "label": l, "score": s})
-            max_score = max(max_score, float(yolo.get("max_score", 0)))
+        # 落库 (失败不阻断检测)
+        persist_qc_result(image_path, result["verdict"], view.detections,
+                          view.max_score, f"[Union] {prompt}",
+                          cfg.get("data_dir", "data"))
 
-        if verdict == "OK":
-            verdict_str = "✓ OK (合格)"
-        elif verdict == "REVIEW":
-            verdict_str = (f"◐ REVIEW 待人工复核 "
-                           f"(触发源: {'+'.join(sources)}; 单源孤证不自主判NG)")
-        else:
-            verdict_str = f"✗ NG (触发源: {'+'.join(sources)})"
-
-        # 落库
-        try:
-            data_dir = cfg.get("data_dir", "data")
-            conn = get_conn(data_dir)
-            save_qc_result(
-                conn,
-                persist_qc_image(image_path, Path(data_dir) / "qc_images"),
-                verdict, detections, max_score, f"[Union] {prompt}")
-            conn.close()
-        except Exception as e:
-            logger.warning("QC 结果落库失败: %s", e)
-
-        active = [s for s, r in (("PatchCore", pc), ("DINO", dino),
-                                 ("YOLO", yolo), ("DINOv2", dv))
-                  if r]
-        _fused = result.get("fusion", {})
-        if (_fused.get("mode") or "staged") == "or":
-            _finfo = "融合: 纯OR (v1.3.0)"
-        else:
-            _ncal = _fused.get("n_cal")
-            _finfo = (f"融合: 阶段{_fused.get('stage', '?')} "
-                      f"(n_cal={_ncal if _ncal is not None else '—'})")
-        status = (f"Union 零漏检 · 产品: {product or '默认'} · "
-                  f"激活源: {'+'.join(active) or '无'} · {_finfo}")
-        yield (result.get("image"), verdict_str, f"{max_score:.2%}",
-               str(len(detections)), table, status,
-               log(f"✓ {verdict_str} · 最高分 {max_score:.2%}"))
+        yield (result.get("image"), view.verdict_str, view.score_str,
+               view.count_str, view.table, view.status,
+               log(f"✓ {view.verdict_str} · 最高分 {view.max_score:.2%}"))
         return
 
     # ─── Grounding DINO 零样本模式 (默认) ─────────────────
@@ -526,42 +458,18 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
                f"⚠ {result['error']}", log(f"✗ 检测失败: {result['error']}"))
         return
 
-    verdict = result["verdict"]
-    max_score = result["max_score"]
-    count = result["count"]
+    # 结果装配 (明细表/判定文案) 见 ui.qc_flow
+    view = assemble_dino_view(result, prompt, threshold)
 
-    if verdict == "OK":
-        verdict_str = "✓ OK (合格)"
-    else:
-        verdict_str = f"✗ NG (不合格 · {count}处缺陷)"
+    # 落库 (失败不阻断检测)
+    persist_qc_result(image_path, result["verdict"], view.detections,
+                      view.max_score, prompt,
+                      _get_config().get("data_dir", "data"))
 
-    table = []
-    for idx, det in enumerate(result["detections"], 1):
-        box = det["box"]
-        table.append([
-            str(idx),
-            det["label"],
-            f"{det['score']:.2%}",
-            f"({box[0]:.0f}, {box[1]:.0f}, {box[2]:.0f}, {box[3]:.0f})",
-        ])
-
-    # 落库
-    try:
-        cfg = _get_config()
-        data_dir = cfg.get("data_dir", "data")
-        conn = get_conn(data_dir)
-        save_qc_result(
-            conn,
-            persist_qc_image(image_path, Path(data_dir) / "qc_images"),
-            verdict, result["detections"], max_score, prompt)
-        conn.close()
-    except Exception as e:
-        logger.warning("QC 结果落库失败: %s", e)
-
-    status = f"检测完成 · 提示词: {prompt[:60]}... · 阈值: {threshold}"
-    yield (result["image"], verdict_str, f"{max_score:.2%}",
-           str(count), table, status,
-           log(f"✓ {verdict_str} · 最高置信度 {max_score:.2%} · {count} 处"))
+    yield (result["image"], view.verdict_str, view.score_str,
+           view.count_str, view.table, view.status,
+           log(f"✓ {view.verdict_str} · 最高置信度 {view.max_score:.2%} · "
+               f"{view.count_str} 处"))
 
 
 def _explain_union():
@@ -671,13 +579,8 @@ def _run_fusion_detect(registry, image_path, prompt, threshold,
         return (None, "ERROR", "—", "—", [],
                 "⚠ 无深度帧, 请先用 3D 深度相机采集。")
 
-    # 融合策略文案 -> 内部枚举
-    if "AND" in (fusion_mode_label or ""):
-        fusion_mode = "and"
-    elif "仅深度" in (fusion_mode_label or ""):
-        fusion_mode = "depth_only"
-    else:
-        fusion_mode = "or"
+    # 融合策略文案 -> 内部枚举 (见 ui.qc_flow)
+    fusion_mode = resolve_fusion_mode(fusion_mode_label)
 
     # 先跑 2D 检测 (仅深度模式时跳过以省时)
     result_2d = None
@@ -689,47 +592,19 @@ def _run_fusion_detect(registry, image_path, prompt, threshold,
                            depth_threshold_mm=depth_threshold,
                            fusion_mode=fusion_mode)
 
-    verdict = fused["verdict"]
-    count = fused["count"]
+    # 判定文案/明细表装配 见 ui.qc_flow
+    verdict_str, score_str, count_str, table = format_fusion_display(fused)
     annotated = annotate_depth(frame, fused)
 
-    if verdict == "OK":
-        verdict_str = "✓ OK (合格)"
-        score_str = "—"
-    else:
-        max_conf = max((d["confidence"] for d in fused["fused_defects"]), default=0)
-        verdict_str = f"✗ NG (不合格 · {count}处)"
-        score_str = f"{max_conf:.2f}"
-
-    # 明细表
-    table = []
-    for idx, d in enumerate(fused["fused_defects"], 1):
-        x1, y1, x2, y2 = d["bbox"]
-        table.append([
-            str(idx),
-            f"{d['source']} · {d['type']}",
-            f"{d['confidence']:.0%}",
-            f"({x1:.0f}, {y1:.0f}, {x2:.0f}, {y2:.0f})",
-        ])
-
-    # 落库
-    try:
-        cfg = _get_config()
-        data_dir = cfg.get("data_dir", "data")
-        conn = get_conn(data_dir)
-        save_qc_result(
-            conn,
-            persist_qc_image(image_path, Path(data_dir) / "qc_images"),
-            verdict, fused["fused_defects"],
-            float(score_str) if score_str != "—" else 0.0,
-            f"[3D融合] {prompt}")
-        conn.close()
-    except Exception:  # noqa: BLE001
-        pass  # 落库失败不阻断检测
+    # 落库 (失败静默不阻断, 对齐原行为)
+    persist_qc_result(image_path, fused["verdict"], fused["fused_defects"],
+                      float(score_str) if score_str != "—" else 0.0,
+                      f"[3D融合] {prompt}",
+                      _get_config().get("data_dir", "data"), warn=False)
 
     status = (f"3D 深度融合 · 策略 {fusion_mode.upper()} · "
               f"深度阈值 {depth_threshold}mm · {fused['reason']}")
-    return (annotated, verdict_str, score_str, str(count), table, status)
+    return (annotated, verdict_str, score_str, count_str, table, status)
 
 
 def _on_recipe_change(recipe_name):
