@@ -89,6 +89,19 @@ class TestAssembleUnionView:
         assert view.max_score == pytest.approx(0.82)
         assert view.score_str == "82.00%"
 
+    def test_unbounded_only_shows_placeholder_score(self):
+        """仅距离分源 (patchcore/dinov2) 触发时不显示误导性的 0.00%。"""
+        view = assemble_union_view(
+            {"verdict": "NG", "ng_sources": ["PatchCore", "DINOv2"],
+             "patchcore": {"score": 26.7}, "dinov2": {"score": 138.8}})
+        assert view.score_str == "— (仅距离分源触发)"
+        assert view.max_score == 0.0  # 落库数值语义不变
+
+    def test_ok_verdict_keeps_percent_display(self):
+        """全源未触发 (OK) 时保持百分比显示, 不出现占位文案。"""
+        view = assemble_union_view({"verdict": "OK", "ng_sources": []})
+        assert view.score_str == "0.00%"
+
     def test_detections_schema_for_persist(self):
         view = assemble_union_view(_union_result_four_sources())
         sources = [d["source"] for d in view.detections]

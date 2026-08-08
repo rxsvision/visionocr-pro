@@ -52,7 +52,8 @@ def assemble_union_view(result: dict, product: str = "") -> QcView:
     """Union 零漏检结果 -> 统一明细表 + detections (落库用) + 判定文案。
 
     注: max_score 仅统计 dino/yolo (0~1 概率语义); patchcore 距离分与
-    dinov2 NLL 分为无界量纲, 混入会破坏百分比显示。
+    dinov2 NLL 分为无界量纲, 混入会破坏百分比显示。无概率源触发时
+    score_str 显示占位文案 (避免 0.00% 误导操作者)。
     """
     verdict = result["verdict"]
     sources = result.get("ng_sources", [])
@@ -108,6 +109,10 @@ def assemble_union_view(result: dict, product: str = "") -> QcView:
     active = [s for s, r in (("PatchCore", pc), ("DINO", dino),
                              ("YOLO", yolo), ("DINOv2", dv))
               if r]
+    # 无概率源 (dino/yolo) 触发时, 百分比显示无意义 -> 占位文案
+    has_prob = bool(dino) or bool(yolo)
+    score_str = (f"{max_score:.2%}" if has_prob or not detections
+                 else "— (仅距离分源触发)")
     _fused = result.get("fusion", {})
     if (_fused.get("mode") or "staged") == "or":
         _finfo = "融合: 纯OR (v1.3.0)"
@@ -119,7 +124,7 @@ def assemble_union_view(result: dict, product: str = "") -> QcView:
               f"激活源: {'+'.join(active) or '无'} · {_finfo}")
 
     return QcView(verdict_str=verdict_str,
-                  score_str=f"{max_score:.2%}",
+                  score_str=score_str,
                   count_str=str(len(detections)),
                   table=table, status=status,
                   detections=detections, max_score=max_score)

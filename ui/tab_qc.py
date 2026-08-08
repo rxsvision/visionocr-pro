@@ -215,7 +215,7 @@ def create_tab_qc(config: dict, registry, mode_toggle=None):
                 count_box = gr.Textbox(
                     label="缺陷数", scale=1, interactive=False)
             detail_table = gr.Dataframe(
-                headers=["#", "缺陷类型", "置信度", "位置 (x1,y1,x2,y2)"],
+                headers=["#", "缺陷类型", "分数", "位置 (x1,y1,x2,y2)"],
                 label="检测明细 (编号对应图上标注)",
                 wrap=True,
             )
@@ -418,7 +418,7 @@ def _run_detect(image_path, prompt, threshold, mode, pc_product,
 
         yield (result.get("image"), view.verdict_str, view.score_str,
                view.count_str, view.table, view.status,
-               log(f"✓ {view.verdict_str} · 最高分 {view.max_score:.2%}"))
+               log(f"✓ {view.verdict_str} · 分数 {view.score_str}"))
         return
 
     # ─── Grounding DINO 零样本模式 (默认) ─────────────────
