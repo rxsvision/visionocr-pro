@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] - 2026-08-08
+
+### Fixed
+
+- Union 仅距离分源触发时最高置信度显示「— (仅距离分源触发)」, 消除 0.00% 歧义 (落库数值不变)
+- 质检明细表列名「置信度」改为「分数」, 避免无界距离分被误读为概率
+
 ## [1.6.0] - 2026-08-08
 
 ### Added
