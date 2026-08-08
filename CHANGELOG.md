@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-08-08
+
+### Added
+
+- ui/qc_flow.py 质检编排逻辑抽离 (无 gradio 依赖可测: 结果装配/判定文案/落库, 28 例单元测试)
+- docs/release_checklist.md 发布验收清单 (eval_acceptance.py 执行点/判定/不通过复盘)
+
+### Changed
+
+- ui/tab_qc.py 瘦身: 三条检测流内联编排改为调用 ui.qc_flow (行为等价重构, 测试 367→395)
+
 ## [1.5.7] - 2026-08-08
 
 ### Added
